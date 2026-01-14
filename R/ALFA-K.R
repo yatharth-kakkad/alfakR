@@ -108,7 +108,7 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
   landscape_data <- fitKrig(fq_boot, nboot) # nboot is passed for Kriging iterations
   saveRDS(landscape_data$summary_stats, file = file.path(outdir, "landscape.Rds"))
   saveRDS(landscape_data$posterior_samples, file = file.path(outdir, "landscape_posterior_samples.Rds"))
-  saveRDS(landscape_data, file = file.path(outdir, "landscape_data.Rds"))
+  #saveRDS(landscape_data, file = file.path(outdir, "landscape_data.Rds"))
   Rxv <- xval(fq_boot)
   saveRDS(Rxv, file = file.path(outdir, "xval.Rds"))
   
