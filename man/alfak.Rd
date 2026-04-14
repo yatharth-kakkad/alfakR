@@ -12,7 +12,8 @@ alfak(
   nboot = 45,
   n0 = 1e+05,
   nb = 1e+07,
-  pm = 5e-05
+  pm = 5e-05,
+  correct_efflux = FALSE
 )
 }
 \arguments{
@@ -28,12 +29,16 @@ Colnames should represent time values that can be multiplied by \code{dt}.
 \item{outdir}{A string specifying the directory path where result files
 (RDS format) will be saved. The directory will be created if it doesn't exist.}
 
-\item{passage_times}{An optional numeric vector of passage times. If \code{NULL},
-calculated from \code{colnames(yi$x) * yi$dt}.}
+\item{passage_times}{An optional numeric vector giving the final internal time
+axis used by the fitter. If \code{NULL}, the time axis is calculated as
+\code{as.numeric(colnames(yi$x)) * yi$dt}. When supplied, \code{passage_times} is used
+as-is and must be numeric, finite, strictly increasing, and have length
+\code{ncol(yi$x)}.}
 
 \item{minobs}{An integer, the minimum total number of observations (reads/counts)
 for a karyotype across all timepoints to be considered "frequent" and included
-in the analysis. Default is 20.}
+in the analysis. A karyotype is considered frequent when
+\code{rowSums(yi$x) >= minobs}. Default is 20.}
 
 \item{nboot}{An integer, the number of bootstrap iterations for fitness
 estimation and for the Kriging process in \code{fitKrig}. Default is 45.}
@@ -46,6 +51,12 @@ size after transfer), used for g0 calculation. Default is 1e7.}
 
 \item{pm}{A numeric value, the per-locus mutation/error rate used in \code{pij}
 calculations. Default is 0.00005.}
+
+\item{correct_efflux}{Logical; if \code{TRUE}, apply the efflux correction after a
+one-time viability pre-check on the frequent karyotypes. The viability term
+currently depends only on total copy number through
+\code{2 * (1 - pm)^total_copy_number - 1}, so this is a ploidy-level approximation
+rather than a chromosome-specific model.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.

@@ -15,11 +15,15 @@
 #'   }
 #' @param outdir A string specifying the directory path where result files
 #'   (RDS format) will be saved. The directory will be created if it doesn't exist.
-#' @param passage_times An optional numeric vector of passage times. If `NULL`,
-#'   calculated from `colnames(yi$x) * yi$dt`.
+#' @param passage_times An optional numeric vector giving the final internal time
+#'   axis used by the fitter. If `NULL`, the time axis is calculated as
+#'   `as.numeric(colnames(yi$x)) * yi$dt`. When supplied, `passage_times` is used
+#'   as-is and must be numeric, finite, strictly increasing, and have length
+#'   `ncol(yi$x)`.
 #' @param minobs An integer, the minimum total number of observations (reads/counts)
 #'   for a karyotype across all timepoints to be considered "frequent" and included
-#'   in the analysis. Default is 20.
+#'   in the analysis. A karyotype is considered frequent when
+#'   `rowSums(yi$x) >= minobs`. Default is 20.
 #' @param nboot An integer, the number of bootstrap iterations for fitness
 #'   estimation and for the Kriging process in `fitKrig`. Default is 45.
 #' @param n0 A numeric value, the initial effective population size at the
@@ -28,6 +32,11 @@
 #'   size after transfer), used for g0 calculation. Default is 1e7.
 #' @param pm A numeric value, the per-locus mutation/error rate used in `pij`
 #'   calculations. Default is 0.00005.
+#' @param correct_efflux Logical; if `TRUE`, apply the efflux correction after a
+#'   one-time viability pre-check on the frequent karyotypes. The viability term
+#'   currently depends only on total copy number through
+#'   `2 * (1 - pm)^total_copy_number - 1`, so this is a ploidy-level approximation
+#'   rather than a chromosome-specific model.
 #'
 #' @return Returns the cross-validation R-squared value (`Rxv`) invisibly.
 #'   The function primarily saves its results to RDS files in the `outdir`:
@@ -95,8 +104,8 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
 
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
-  if (max(rowSums(yi$x)) < minobs)
-    stop(paste("no frequent karyotypes detected for minobs", minobs))
+  get_frequent_karyotypes(yi$x, minobs)
+  resolve_time_axis(yi, passage_times)
 
   # Parallelism and cl related code removed
 
@@ -155,6 +164,242 @@ R2R <- function(obs, pred) {
   1 - sum((pred - obs)^2) / sum((obs - mean(obs))^2)
 }
 
+ALFAK_FEXP_DELTA_TOL <- 1e-8
+ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
+ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
+
+#' Format a short karyotype preview for diagnostics
+#' @keywords internal
+#' @noRd
+format_karyotype_preview <- function(karyotypes, max_show = 5) {
+  if (length(karyotypes) == 0) {
+    return("<none>")
+  }
+  shown <- utils::head(karyotypes, max_show)
+  preview <- paste(shown, collapse = ", ")
+  if (length(karyotypes) > max_show) {
+    preview <- paste0(preview, ", ...")
+  }
+  preview
+}
+
+#' Select frequent karyotypes using the documented minobs rule
+#' @keywords internal
+#' @noRd
+get_frequent_karyotypes <- function(x, minobs) {
+  if (!is.matrix(x)) {
+    stop("`yi$x`/`data$x` must be a matrix of karyotype counts.")
+  }
+  if (is.null(rownames(x)) || any(!nzchar(rownames(x)))) {
+    stop("`yi$x`/`data$x` must have non-empty rownames for karyotype IDs.")
+  }
+  if (!is.numeric(minobs) || length(minobs) != 1 || !is.finite(minobs) || minobs < 0) {
+    stop("`minobs` must be a single non-negative finite numeric value.")
+  }
+  minobs <- as.numeric(minobs)
+  fq <- rownames(x)[rowSums(x) >= minobs]
+  if (length(fq) == 0) {
+    stop(sprintf(
+      "no frequent karyotypes detected for minobs = %s; frequent karyotypes require rowSums(x) >= minobs",
+      format(minobs, trim = TRUE)
+    ))
+  }
+  fq
+}
+
+#' Resolve and validate the internal time axis
+#' @keywords internal
+#' @noRd
+resolve_time_axis <- function(data, passage_times = NULL) {
+  if (!is.list(data) || is.null(data$x) || !is.matrix(data$x)) {
+    stop("`yi`/`data` must be a list containing a matrix `x` of karyotype counts.")
+  }
+  if (ncol(data$x) < 2) {
+    stop("At least two timepoints are required in `yi$x`/`data$x`.")
+  }
+
+  if (is.null(passage_times)) {
+    if (is.null(data$dt) || !is.numeric(data$dt) || length(data$dt) != 1 || !is.finite(data$dt)) {
+      stop("`yi$dt` must be a single finite numeric value when `passage_times` is NULL.")
+    }
+    raw_axis <- suppressWarnings(as.numeric(colnames(data$x)))
+    if (length(raw_axis) != ncol(data$x) || any(!is.finite(raw_axis))) {
+      stop("When `passage_times` is NULL, `colnames(yi$x)` must be numeric and finite so `colnames(yi$x) * yi$dt` defines the time axis.")
+    }
+    time_axis <- raw_axis * data$dt
+  } else {
+    if (!is.numeric(passage_times)) {
+      stop("`passage_times` must be a numeric vector when supplied.")
+    }
+    if (length(passage_times) != ncol(data$x)) {
+      stop(sprintf(
+        "`passage_times` must have length %d to match ncol(yi$x); got %d.",
+        ncol(data$x), length(passage_times)
+      ))
+    }
+    if (any(!is.finite(passage_times))) {
+      stop("`passage_times` must contain only finite values.")
+    }
+    time_axis <- as.numeric(passage_times)
+  }
+
+  delta_t <- diff(time_axis)
+  if (any(delta_t <= 0)) {
+    stop("The internal time axis must be strictly increasing.")
+  }
+
+  time_axis
+}
+
+#' Normalize counts to frequencies by column
+#' @keywords internal
+#' @noRd
+normalize_columns <- function(count_matrix) {
+  totals <- colSums(count_matrix)
+  denom <- ifelse(totals == 0, 1, totals)
+  freq_matrix <- sweep(count_matrix, 2, denom, "/")
+  if (any(totals == 0)) {
+    freq_matrix[, totals == 0] <- 0
+  }
+  freq_matrix
+}
+
+#' Validate viability for efflux correction once before bootstrapping
+#' @keywords internal
+#' @noRd
+prepare_efflux_viability <- function(fq_vec, pm, correct_efflux,
+                                     viability_tol = ALFAK_EFFLUX_VIABILITY_TOL) {
+  if (!is.numeric(pm) || length(pm) != 1 || !is.finite(pm) || pm < 0 || pm >= 1) {
+    stop("`pm` must be a single finite numeric value in [0, 1).")
+  }
+  viability <- setNames(rep(1, nrow(fq_vec)), rownames(fq_vec))
+  if (!isTRUE(correct_efflux)) {
+    return(viability)
+  }
+
+  viability <- setNames(2 * (1 - pm)^rowSums(fq_vec) - 1, rownames(fq_vec))
+
+  non_positive <- viability <= 0
+  if (any(non_positive)) {
+    affected <- names(viability)[non_positive]
+    affected_vals <- viability[non_positive]
+    stop(sprintf(
+      paste0(
+        "correct_efflux viability pre-check failed before bootstrap: pm=%s yields ",
+        "%d frequent karyotype(s) with viability <= 0; affected=%s; viability range among affected=[%.6g, %.6g]."
+      ),
+      format(pm, trim = TRUE),
+      length(affected),
+      format_karyotype_preview(affected),
+      min(affected_vals),
+      max(affected_vals)
+    ))
+  }
+
+  near_zero <- viability < viability_tol
+  if (any(near_zero)) {
+    affected <- names(viability)[near_zero]
+    affected_vals <- viability[near_zero]
+    warning(sprintf(
+      paste0(
+        "correct_efflux viability pre-check before bootstrap: pm=%s yields ",
+        "%d frequent karyotype(s) with 0 < viability < %.1e; affected=%s; viability range among affected=[%.6g, %.6g]."
+      ),
+      format(pm, trim = TRUE),
+      length(affected),
+      viability_tol,
+      format_karyotype_preview(affected),
+      min(affected_vals),
+      max(affected_vals)
+    ))
+  }
+
+  viability
+}
+
+#' Run optim and surface non-convergence explicitly
+#' @keywords internal
+#' @noRd
+run_optim_checked <- function(par, fn, ..., method = "BFGS", control = NULL, context) {
+  opt <- try(stats::optim(par = par, fn = fn, ..., method = method, control = control), silent = TRUE)
+  if (inherits(opt, "try-error")) {
+    stop(sprintf("%s failed: %s", context, as.character(opt)))
+  }
+  if (!all(is.finite(opt$par)) || !is.finite(opt$value)) {
+    stop(sprintf("%s returned non-finite parameters or objective values.", context))
+  }
+  if (!is.null(opt$convergence) && opt$convergence != 0) {
+    warning(sprintf(
+      "%s returned convergence code %d%s",
+      context,
+      opt$convergence,
+      if (!is.null(opt$message) && nzchar(opt$message)) paste0(": ", opt$message) else "."
+    ))
+  }
+  opt
+}
+
+#' Run optimise and warn on invalid scalar optima
+#' @keywords internal
+#' @noRd
+run_optimise_checked <- function(f, interval, ..., context) {
+  opt <- try(stats::optimise(f, interval = interval, ...), silent = TRUE)
+  if (inherits(opt, "try-error")) {
+    warning(sprintf("%s failed: %s", context, as.character(opt)))
+    return(NULL)
+  }
+  if (!is.finite(opt$minimum) || !is.finite(opt$objective)) {
+    warning(sprintf("%s returned a non-finite optimum.", context))
+    return(NULL)
+  }
+  opt
+}
+
+#' Run solve.QP and fail loudly on invalid optimizer state
+#' @keywords internal
+#' @noRd
+run_solve_qp_checked <- function(Dmat, dvec, Amat, bvec, meq, context) {
+  qp_sol <- try(quadprog::solve.QP(Dmat, dvec, Amat, bvec, meq = meq), silent = TRUE)
+  if (inherits(qp_sol, "try-error")) {
+    stop(sprintf("%s failed: %s", context, as.character(qp_sol)))
+  }
+  if (is.null(qp_sol$solution) || any(!is.finite(qp_sol$solution))) {
+    stop(sprintf("%s returned a non-finite solution.", context))
+  }
+  qp_sol
+}
+
+#' Weighted parent fitness for nearest-neighbour prior
+#' @keywords internal
+#' @noRd
+weighted_parent_fitness <- function(nni_item, fpar) {
+  valid_parents <- nni_item$nj[nni_item$nj %in% names(fpar)]
+  if (length(valid_parents) == 0) {
+    return(NA_real_)
+  }
+  parent_fitness <- fpar[valid_parents]
+  parent_weights <- nni_item$pij[match(valid_parents, nni_item$nj)]
+  if (length(parent_weights) == length(parent_fitness) &&
+      all(is.finite(parent_weights)) &&
+      all(parent_weights >= 0) &&
+      sum(parent_weights) > 0) {
+    return(stats::weighted.mean(parent_fitness, w = parent_weights))
+  }
+  mean(parent_fitness, na.rm = TRUE)
+}
+
+#' Numerically stable exposure term for neighbour estimation
+#' @keywords internal
+#' @noRd
+fExp_stable <- function(fc_arg, fp_arg, pij_val, tt_arg, tol = ALFAK_FEXP_DELTA_TOL) {
+  delta <- fc_arg - fp_arg
+  if (abs(delta) < tol) {
+    # This is the analytic limit of fp * (exp(tt * delta) - 1) / delta as delta -> 0.
+    return(pij_val * fp_arg * tt_arg)
+  }
+  pij_val * fp_arg * expm1(tt_arg * delta) / delta
+}
+
 #' Generate all single-step neighbours for karyotype IDs
 #' @keywords internal
 #' @noRd
@@ -203,12 +448,14 @@ bootstrap_counts <- function(data) {
 #' @keywords internal
 #' @noRd
 compute_dx_dt <- function(x, timepoints) {
-  num_species <- nrow(x)
-  dx_dt <- matrix(NA, nrow = num_species, ncol = ncol(x) - 1)
-  for (i in seq_len(num_species)) {
-    dx_dt[i, ] <- diff(x[i, ]) / diff(timepoints)
+  if (length(timepoints) != ncol(x)) {
+    stop("`timepoints` must have length ncol(x).")
   }
-  dx_dt
+  delta_t <- diff(timepoints)
+  if (any(!is.finite(delta_t)) || any(delta_t <= 0)) {
+    stop("`timepoints` must be finite and strictly increasing for `compute_dx_dt()`.")
+  }
+  sweep(x[, -1, drop = FALSE] - x[, -ncol(x), drop = FALSE], 2, delta_t, "/")
 }
 
 #' Calculate log-sum-exp for numerical stability
@@ -255,7 +502,8 @@ gen_nn_info <- function(fq, pm = 0.00005) {
 neg_log_lik <- function(param, counts, timepoints) {
   K <- nrow(counts)
   Tt <- ncol(counts)
-  f_free <- param[1:(K - 1)]
+  free_idx <- if (K > 1) seq_len(K - 1) else integer(0)
+  f_free <- param[free_idx]
   f_full <- c(f_free, -sum(f_free))
   log_x0 <- param[K:(2 * K - 1)]
   nll <- 0
@@ -276,13 +524,18 @@ neg_log_lik <- function(param, counts, timepoints) {
 #' @noRd
 joint_optimize <- function(counts, timepoints, f_init, x0_init) {
   K <- length(f_init)
-  f_free_init <- f_init[1:(K - 1)]
+  if (K == 1) {
+    return(list(f = 0, x0 = 1))
+  }
+  f_free_init <- f_init[seq_len(K - 1)]
   x0_init_log <- log(x0_init + 1e-12) # Original had this epsilon
   param_init <- c(f_free_init, x0_init_log)
   obj_fun <- function(par) neg_log_lik(par, counts, timepoints)
-  opt <- stats::optim(par = param_init, fn = obj_fun, method = "BFGS",
-                      control = list(maxit = 200, reltol = 1e-8))
-  f_free_opt <- opt$par[1:(K - 1)]
+  opt <- run_optim_checked(par = param_init, fn = obj_fun,
+                           method = "BFGS",
+                           control = list(maxit = 200, reltol = 1e-8),
+                           context = "joint_optimize")
+  f_free_opt <- opt$par[seq_len(K - 1)]
   f_opt <- c(f_free_opt, -sum(f_free_opt))
   log_x0_opt <- opt$par[K:(2 * K - 1)]
   x0_opt <- exp(log_x0_opt)
@@ -309,6 +562,9 @@ project_forward_log <- function(x0, f, timepoints) {
 #' @keywords internal
 #' @noRd
 optimize_initial_frequencies <- function(x_obs, f, timepoints) {
+  if (nrow(x_obs) == 1) {
+    return(1)
+  }
   loss_function <- function(log_x0) {
     x0 <- exp(log_x0)
     x0 <- x0 / sum(x0)
@@ -317,7 +573,9 @@ optimize_initial_frequencies <- function(x_obs, f, timepoints) {
   }
   x_ini <- x_obs[, 1] + 1e-6 # Original had this epsilon
   x_ini <- x_ini / sum(x_ini)
-  opt_result <- stats::optim(log(x_ini), loss_function, method = "BFGS")
+  opt_result <- run_optim_checked(par = log(x_ini), fn = loss_function,
+                                  method = "BFGS",
+                                  context = "optimize_initial_frequencies")
   x0_opt <- exp(opt_result$par)
   x0_opt / sum(x0_opt)
 }
@@ -354,7 +612,7 @@ find_birth_times <- function(opt_res, time_range, minF) {
 #' @noRd
 solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, pm = 0.00005,
                                     n0, nb, passage_times = NULL,correct_efflux=FALSE) {
-  fq <- rownames(data$x)[rowSums(data$x) > minobs]
+  fq <- get_frequent_karyotypes(data$x, minobs)
   nn_info_list <- gen_nn_info(fq, pm) # Renamed 'nn' to 'nn_info_list' for clarity
   if (length(nn_info_list) > 0 && !is.null(nn_info_list[[1]]$ni)) { # Check if naming is needed
     names(nn_info_list) <- sapply(nn_info_list, function(nni) nni$ni)
@@ -365,23 +623,20 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
   }
 
   fq_vec <- do.call(rbind, lapply(fq, s2v))
-
-  P <- (1-pm)^rowSums(fq_vec)
+  rownames(fq_vec) <- fq
+  viability <- prepare_efflux_viability(fq_vec, pm = pm, correct_efflux = correct_efflux)
 
   # fq_nn <- which(as.matrix(stats::dist(fq_vec)) == 1) # fq_nn was not used
-  timepoints <- as.numeric(colnames(data$x)) * data$dt
+  timepoints <- resolve_time_axis(data, passage_times)
   num_species <- length(fq)
   num_timepoints <- ncol(data$x)
 
   bootstrap_iter <- function(b_iter_idx, current_data, current_fq, current_timepoints,
                              current_num_species, current_num_timepoints,
                              current_epsilon, current_n0, current_nb,
-                             current_passage_times, current_nn_info) { # Renamed arguments
+                             current_viability, current_nn_info) { # Renamed arguments
     boot_data <- bootstrap_counts(current_data$x) # Bootstrap from original full data
-    x <- apply(boot_data[current_fq, , drop = FALSE], 2, function(col) { # Subset fq after bootstrap
-      s <- sum(col)
-      if (s == 0) rep(0, length(col)) else col / s # Normalize, handle sum=0
-    })
+    x <- normalize_columns(boot_data[current_fq, , drop = FALSE])
     dx_dt <- compute_dx_dt(x, current_timepoints)
     x_trim <- x[, -1, drop = FALSE] # Use x(t+1) for M_t, as per original logic
 
@@ -390,7 +645,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 
     for (t_idx in 1:(current_num_timepoints - 1)) { # Renamed t to t_idx
       xt <- x_trim[, t_idx]
-      M_t <- diag(xt) - outer(xt, xt)
+      M_t <- diag(as.numeric(xt), nrow = length(xt), ncol = length(xt)) - outer(xt, xt)
       Q_accum <- Q_accum + M_t %*% M_t
       r_accum <- r_accum + M_t %*% dx_dt[, t_idx]
     }
@@ -399,31 +654,31 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     A_mat <- matrix(1, nrow = current_num_species, ncol = 1) # Renamed A
     bvec_val <- 0 # Renamed bvec
 
-    # Using quadprog::solve.QP as it will be imported
-    qp_sol <- quadprog::solve.QP(Dmat_boot, dvec_boot, A_mat, bvec_val, meq = 1)
+    qp_sol <- run_solve_qp_checked(Dmat_boot, dvec_boot, A_mat, bvec_val, meq = 1,
+                                   context = sprintf("solve.QP bootstrap replicate %d", b_iter_idx))
     f_qp <- qp_sol$solution
 
     x0_init <- optimize_initial_frequencies(x, f_qp, current_timepoints)
     opt_res <- joint_optimize(boot_data[current_fq, , drop = FALSE], current_timepoints, f_qp, x0_init)
 
+    # g0 still uses the first interval because the passage-level scaling step assumes a single
+    # growth interval, but it now uses the same validated time_axis as every other time-dependent step.
     g0_val <- log(current_nb / current_n0) / diff(current_timepoints)[1] # Renamed g0
-    if (!is.null(current_passage_times))
-      g0_val <- log(current_nb / current_n0) / diff(current_passage_times * current_data$dt)[1]
 
     if (correct_efflux) {
-      viability <- 2 * P - 1
+      viability_vec <- current_viability[current_fq]
 
       # Term 1: sum(x0 * f_rel / viability)
-      sum_weighted_frel <- sum((opt_res$x0 * opt_res$f) / viability)
+      sum_weighted_frel <- sum((opt_res$x0 * opt_res$f) / viability_vec)
 
       # Term 2: sum(x0 / viability)
-      sum_weights <- sum(opt_res$x0 / viability)
+      sum_weights <- sum(opt_res$x0 / viability_vec)
 
       # Solve for constant k
       k_const <- (sum_weighted_frel - g0_val) / sum_weights
 
       # Calculate absolute intrinsic division rates: (f_rel - k) / viability
-      opt_res$f <- (opt_res$f - k_const) / viability
+      opt_res$f <- (opt_res$f - k_const) / viability_vec
 
     } else {
       # Original scaling: shifts mean to match g0
@@ -446,19 +701,20 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     f_final <- opt_res$f
     x0_final <- opt_res$x0
 
-    fExp <- function(fc_arg, fp_arg, pij_val, tt_arg) { # Renamed args
-      pij_val * fp_arg / (fc_arg - fp_arg) * (exp(tt_arg * (fc_arg - fp_arg)) - 1)
-    }
     xfit <- project_forward_log(x0par, fpar, current_timepoints)
     rownames(xfit) <- current_fq
     ntot <- colSums(boot_data) # Total counts from bootstrapped data
 
     opt_fc <- function(fc_param, nni_param, prior_mean_param = NULL, prior_sd_param = NULL, do_prior_param = FALSE) { #Renamed args
+      if (length(nni_param$nj) == 0) {
+        return(10^9)
+      }
       child <- nni_param$ni
+      parent_fitness_mean <- weighted_parent_fitness(nni_param, fpar)
       xc_est <- colSums(do.call(rbind, lapply(1:length(nni_param$nj), function(i_loop) { #Renamed i
         parent_karyo <- nni_param$nj[i_loop] #Renamed par
         tt_val <- current_timepoints - birth_times_est[parent_karyo] #Renamed tt
-        fExp(fc_param, fpar[parent_karyo], nni_param$pij[i_loop], tt_val) * xfit[parent_karyo, ]
+        fExp_stable(fc_param, fpar[parent_karyo], nni_param$pij[i_loop], tt_val) * xfit[parent_karyo, ]
       })))
       xc_est <- pmax(0, pmin(1, xc_est)) # Ensure probabilities are in [0,1]
       xc_obs <- rep(0, length(current_timepoints))
@@ -466,8 +722,14 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
         xc_obs <- boot_data[nni_param$ni, ]
 
       res <- stats::dbinom(xc_obs, round(ntot), prob = xc_est, log = TRUE) # round(ntot) if ntot can be non-integer
-      if (do_prior_param)
-        res <- c(res, stats::dnorm(fc_param - fpar[nni_param$nj], mean = prior_mean_param, sd = prior_sd_param, log = TRUE))
+      if (do_prior_param && is.finite(parent_fitness_mean)) {
+        # The neighbour prior is always defined on child fitness minus a parent-fitness baseline.
+        # For multi-parent children we use a pij-weighted parent mean when the weights are valid.
+        res <- c(res, stats::dnorm(fc_param - parent_fitness_mean,
+                                   mean = prior_mean_param,
+                                   sd = prior_sd_param,
+                                   log = TRUE))
+      }
       res[!is.finite(res)] <- -(10^9) # Penalize non-finite values
       -sum(res)
     }
@@ -499,29 +761,27 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       # Use names for sapply for robustness if current_nn_info can be sparse/differently ordered
       sapply_names <- names(current_nn_info)[nn_present]
       if(length(sapply_names) > 0) { # Ensure there are names to iterate over
-        results_sapply <- sapply(current_nn_info[sapply_names], function(nni_sapply2) { #Renamed nni
-          res <- stats::optimise(opt_fc, interval = search_interval, nni_param = nni_sapply2, do_prior_param = FALSE)
-          res$minimum
-        })
-        fc[sapply_names] <- results_sapply
+        for (child_name in sapply_names) {
+          res <- run_optimise_checked(opt_fc, interval = search_interval,
+                                      nni_param = current_nn_info[[child_name]],
+                                      do_prior_param = FALSE,
+                                      context = sprintf("optimise nearest-neighbour fitness for observed child %s", child_name))
+          if (!is.null(res)) {
+            fc[child_name] <- res$minimum
+          }
+        }
       }
     }
 
-    fc_prior_vals <- numeric(0) # Renamed fc_prior
+    fc_prior_vals <- numeric(0) # Child-minus-parent-mean deltas for the neighbour prior
     if(any(nn_present)){
       # Calculate differences based on nn_info items that were present AND had their fc computed
       nn_present_and_fc_computed <- nn_present & !is.na(fc)
       if(any(nn_present_and_fc_computed)){
         fc_prior_vals <- unlist(lapply(current_nn_info[nn_present_and_fc_computed], function(nni_item) {
-          # Ensure fpar has names and nni_item$nj are valid names in fpar
-          valid_parents <- nni_item$nj[nni_item$nj %in% names(fpar)]
-          if(length(valid_parents)>0){
-            # Original: fpar[nni_item$nj] - fc[nni_item$ni]
-            # This implies multiple differences if nni_item$nj is a vector.
-            # A common pattern is difference to the mean of parents, or each parent.
-            # Let's assume difference to the mean parent fitness for now
-            mean_parent_f <- mean(fpar[valid_parents], na.rm=TRUE)
-            mean_parent_f - fc[nni_item$ni]
+          parent_f_mean <- weighted_parent_fitness(nni_item, fpar)
+          if(is.finite(parent_f_mean)){
+            fc[nni_item$ni] - parent_f_mean
           } else {
             numeric(0) # No valid parents to compute difference from
           }
@@ -532,27 +792,34 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     if (any(!nn_present) && length(fc_prior_vals) > 0 && !all(is.na(fc_prior_vals))) {
       mean_fc_prior_val <- mean(fc_prior_vals, na.rm = TRUE) # Renamed mean_fc_prior
       sd_fc_prior_val <- sd(fc_prior_vals, na.rm = TRUE)   # Renamed sd_fc_prior
-      if(is.na(sd_fc_prior_val) || sd_fc_prior_val == 0) sd_fc_prior_val <- 1e-3 # Default small SD
+      if(is.na(sd_fc_prior_val) || sd_fc_prior_val == 0) sd_fc_prior_val <- ALFAK_NN_PRIOR_SD_FLOOR
 
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
-        results_sapply_not_present <- sapply(current_nn_info[sapply_names_not_present], function(nni_sapply3) { #Renamed nni
-          res <- stats::optimise(opt_fc, interval = search_interval, nni_param = nni_sapply3,
-                                 prior_mean_param = mean_fc_prior_val,
-                                 prior_sd_param = sd_fc_prior_val,
-                                 do_prior_param = TRUE)
-          res$minimum
-        })
-        fc[sapply_names_not_present] <- results_sapply_not_present
+        for (child_name in sapply_names_not_present) {
+          res <- run_optimise_checked(opt_fc, interval = search_interval,
+                                      nni_param = current_nn_info[[child_name]],
+                                      prior_mean_param = mean_fc_prior_val,
+                                      prior_sd_param = sd_fc_prior_val,
+                                      do_prior_param = TRUE,
+                                      context = sprintf("optimise nearest-neighbour fitness with prior for latent child %s", child_name))
+          if (!is.null(res)) {
+            fc[child_name] <- res$minimum
+          }
+        }
       }
     } else if (any(!nn_present)) { # No prior to use
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
-        results_sapply_no_prior <- sapply(current_nn_info[sapply_names_not_present], function(nni_sapply3) {
-          res <- stats::optimise(opt_fc, interval = search_interval, nni_param = nni_sapply3, do_prior_param = FALSE)
-          res$minimum
-        })
-        fc[sapply_names_not_present] <- results_sapply_no_prior
+        for (child_name in sapply_names_not_present) {
+          res <- run_optimise_checked(opt_fc, interval = search_interval,
+                                      nni_param = current_nn_info[[child_name]],
+                                      do_prior_param = FALSE,
+                                      context = sprintf("optimise nearest-neighbour fitness without prior for latent child %s", child_name))
+          if (!is.null(res)) {
+            fc[child_name] <- res$minimum
+          }
+        }
       }
     }
 
@@ -568,7 +835,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
                       current_data = data, current_fq = fq, current_timepoints = timepoints,
                       current_num_species = num_species, current_num_timepoints = num_timepoints,
                       current_epsilon = epsilon, current_n0 = n0, current_nb = nb,
-                      current_passage_times = passage_times, current_nn_info = nn_info_list)
+                      current_viability = viability, current_nn_info = nn_info_list)
 
   # Consolidate results
   f_initial_mat <- do.call(rbind, lapply(boot_list, function(x) x$f_initial))
@@ -576,6 +843,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
   x0_initial_mat <- do.call(rbind, lapply(boot_list, function(x) x$x0_initial))
   x0_final_mat  <- do.call(rbind, lapply(boot_list, function(x) x$x0_final))
   f_nn_mat <- do.call(rbind, lapply(boot_list, function(x) x$f_nn))
+  if (is.null(f_nn_mat)) {
+    f_nn_mat <- matrix(numeric(0), nrow = length(boot_list), ncol = 0)
+  }
 
   # Set column names if matrices are not empty and fq/names(nn_info_list) are not empty
   if(length(fq) > 0) {
@@ -743,14 +1013,15 @@ xval <- function(fq_boot) {
     names(idi) <- ki
     idi
   }))
+  # Fold ownership keeps the first assignment for overlapping neighbourhoods, which preserves
+  # the long-standing heuristic while making the order-dependence explicit.
   ids <- ids[!duplicated(names(ids))] # Ensure unique names for ids
   uids <- unique(ids) # These are fold identifiers
+  b <- sample(seq_len(nrow(fboot)), 1)
+  fi <- fboot[b, ]
 
   # Use lapply directly
   tmp_list <- lapply(uids, function(id_fold) { # Renamed id to id_fold
-    fboot_shuffled <- apply(fboot, 2, sample) # Original shuffling strategy
-    fi <- fboot_shuffled[1, ]
-
     # Original logic for train/test split based on 'ids' and current 'id_fold'
     train_indices <- !(ids == id_fold)
     test_indices <- (ids == id_fold)
