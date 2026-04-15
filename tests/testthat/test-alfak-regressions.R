@@ -28,6 +28,43 @@ test_that("minobs includes karyotypes exactly at the threshold", {
   expect_setequal(colnames(res$final_fitness), c("2.2.2", "2.2.1"))
 })
 
+test_that("matrix-like count inputs are accepted and coerced at entry", {
+  yi_df <- list(
+    x = data.frame(
+      "0" = c(10, 15),
+      "1" = c(10, 15),
+      row.names = c("2.2.2", "2.2.1"),
+      check.names = FALSE
+    ),
+    dt = 1
+  )
+
+  res_df <- alfakR:::solve_fitness_bootstrap(
+    yi_df,
+    minobs = 20,
+    nboot = 1,
+    n0 = 1e4,
+    nb = 1e6,
+    pm = 1e-4
+  )
+  expect_setequal(colnames(res_df$final_fitness), c("2.2.2", "2.2.1"))
+
+  skip_if_not_installed("Matrix")
+  x_sparse <- Matrix::Matrix(c(10, 15, 10, 15), nrow = 2, sparse = TRUE)
+  rownames(x_sparse) <- c("2.2.2", "2.2.1")
+  colnames(x_sparse) <- c("0", "1")
+
+  res_sparse <- alfakR:::solve_fitness_bootstrap(
+    list(x = x_sparse, dt = 1),
+    minobs = 20,
+    nboot = 1,
+    n0 = 1e4,
+    nb = 1e6,
+    pm = 1e-4
+  )
+  expect_setequal(colnames(res_sparse$final_fitness), c("2.2.2", "2.2.1"))
+})
+
 test_that("correct_efflux stops before bootstrap when viability is non-positive", {
   yi <- list(
     x = make_counts(

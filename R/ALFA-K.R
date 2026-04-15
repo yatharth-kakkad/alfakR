@@ -103,6 +103,7 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  yi$x <- coerce_count_matrix(yi$x)
 
   get_frequent_karyotypes(yi$x, minobs)
   resolve_time_axis(yi, passage_times)
@@ -168,6 +169,28 @@ ALFAK_FEXP_DELTA_TOL <- 1e-8
 ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
 ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
 
+#' Coerce supported count containers to a base numeric matrix
+#' @keywords internal
+#' @noRd
+coerce_count_matrix <- function(x) {
+  if (is.null(x)) {
+    stop("`yi$x`/`data$x` must be a two-dimensional numeric count object.")
+  }
+  x_dim <- dim(x)
+  if (length(x_dim) != 2) {
+    stop("`yi$x`/`data$x` must be a two-dimensional numeric count object.")
+  }
+
+  x_mat <- try(as.matrix(x), silent = TRUE)
+  if (inherits(x_mat, "try-error") || !is.matrix(x_mat)) {
+    stop("`yi$x`/`data$x` must be coercible to a numeric matrix of karyotype counts.")
+  }
+  if (!is.numeric(x_mat)) {
+    stop("`yi$x`/`data$x` must contain numeric karyotype counts.")
+  }
+  x_mat
+}
+
 #' Format a short karyotype preview for diagnostics
 #' @keywords internal
 #' @noRd
@@ -187,9 +210,7 @@ format_karyotype_preview <- function(karyotypes, max_show = 5) {
 #' @keywords internal
 #' @noRd
 get_frequent_karyotypes <- function(x, minobs) {
-  if (!is.matrix(x)) {
-    stop("`yi$x`/`data$x` must be a matrix of karyotype counts.")
-  }
+  x <- coerce_count_matrix(x)
   if (is.null(rownames(x)) || any(!nzchar(rownames(x)))) {
     stop("`yi$x`/`data$x` must have non-empty rownames for karyotype IDs.")
   }
@@ -211,9 +232,10 @@ get_frequent_karyotypes <- function(x, minobs) {
 #' @keywords internal
 #' @noRd
 resolve_time_axis <- function(data, passage_times = NULL) {
-  if (!is.list(data) || is.null(data$x) || !is.matrix(data$x)) {
-    stop("`yi`/`data` must be a list containing a matrix `x` of karyotype counts.")
+  if (!is.list(data) || is.null(data$x)) {
+    stop("`yi`/`data` must be a list containing a matrix-like `x` of karyotype counts.")
   }
+  data$x <- coerce_count_matrix(data$x)
   if (ncol(data$x) < 2) {
     stop("At least two timepoints are required in `yi$x`/`data$x`.")
   }
@@ -575,6 +597,7 @@ optimize_initial_frequencies <- function(x_obs, f, timepoints) {
   x_ini <- x_ini / sum(x_ini)
   opt_result <- run_optim_checked(par = log(x_ini), fn = loss_function,
                                   method = "BFGS",
+                                  control = list(maxit = 500, reltol = 1e-8),
                                   context = "optimize_initial_frequencies")
   x0_opt <- exp(opt_result$par)
   x0_opt / sum(x0_opt)
@@ -612,6 +635,7 @@ find_birth_times <- function(opt_res, time_range, minF) {
 #' @noRd
 solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, pm = 0.00005,
                                     n0, nb, passage_times = NULL,correct_efflux=FALSE) {
+  data$x <- coerce_count_matrix(data$x)
   fq <- get_frequent_karyotypes(data$x, minobs)
   nn_info_list <- gen_nn_info(fq, pm) # Renamed 'nn' to 'nn_info_list' for clarity
   if (length(nn_info_list) > 0 && !is.null(nn_info_list[[1]]$ni)) { # Check if naming is needed
