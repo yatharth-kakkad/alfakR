@@ -37,6 +37,10 @@
 #'   currently depends only on total copy number through
 #'   `2 * (1 - pm)^total_copy_number - 1`, so this is a ploidy-level approximation
 #'   rather than a chromosome-specific model.
+#' @param landscape_data_output Logical; if `TRUE`, also save the optional
+#'   `landscape_data.Rds` file containing the stable Kriging mean and median
+#'   model objects. Default is `FALSE`, so only the documented core outputs are
+#'   written.
 #'
 #' @return Returns the cross-validation R-squared value (`Rxv`) invisibly.
 #'   The function primarily saves its results to RDS files in the `outdir`:
@@ -47,6 +51,8 @@
 #'     \item `landscape_posterior_samples.Rds`: The full matrix of posterior
 #'       samples from the Kriging bootstraps in `fitKrig`.
 #'     \item `xval.Rds`: The cross-validation R-squared value (`Rxv`).
+#'     \item `landscape_data.Rds`: Optional stable Kriging mean/median model
+#'       objects, written only when `landscape_data_output = TRUE`.
 #'   }
 #'
 #' @export
@@ -98,11 +104,15 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
                   n0 = 1e5,
                   nb = 1e7,
                   pm = 0.00005,
-                  correct_efflux=FALSE) {
+                  correct_efflux=FALSE,
+                  landscape_data_output = FALSE) {
 
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  if (!is.logical(landscape_data_output) || length(landscape_data_output) != 1 || is.na(landscape_data_output)) {
+    stop("`landscape_data_output` must be a single TRUE/FALSE value.")
+  }
   yi$x <- coerce_count_matrix(yi$x)
 
   get_frequent_karyotypes(yi$x, minobs)
@@ -119,9 +129,11 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
   saveRDS(landscape_data$summary_stats, file = file.path(outdir, "landscape.Rds"))
   saveRDS(landscape_data$posterior_samples, file = file.path(outdir, "landscape_posterior_samples.Rds"))
 
-  Krig_stable<-list(landscape_data$krig_stable_mean,landscape_data$krig_stable_median)
-  names(Krig_stable)<-c('mean','median')
-  saveRDS(Krig_stable, file = file.path(outdir, "landscape_data.Rds"))
+  if (isTRUE(landscape_data_output)) {
+    Krig_stable <- list(landscape_data$krig_stable_mean, landscape_data$krig_stable_median)
+    names(Krig_stable) <- c("mean", "median")
+    saveRDS(Krig_stable, file = file.path(outdir, "landscape_data.Rds"))
+  }
   Rxv <- xval(fq_boot)
   saveRDS(Rxv, file = file.path(outdir, "xval.Rds"))
 

@@ -13,7 +13,8 @@ alfak(
   n0 = 1e+05,
   nb = 1e+07,
   pm = 5e-05,
-  correct_efflux = FALSE
+  correct_efflux = FALSE,
+  landscape_data_output = FALSE
 )
 }
 \arguments{
@@ -57,6 +58,11 @@ one-time viability pre-check on the frequent karyotypes. The viability term
 currently depends only on total copy number through
 \code{2 * (1 - pm)^total_copy_number - 1}, so this is a ploidy-level approximation
 rather than a chromosome-specific model.}
+
+\item{landscape_data_output}{Logical; if \code{TRUE}, also save the optional
+\code{landscape_data.Rds} file containing the stable Kriging mean and median
+model objects. Default is \code{FALSE}, so only the documented core outputs are
+written.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.
@@ -68,6 +74,8 @@ Kriging-inferred fitness landscape from \code{fitKrig}.
 \item \code{landscape_posterior_samples.Rds}: The full matrix of posterior
 samples from the Kriging bootstraps in \code{fitKrig}.
 \item \code{xval.Rds}: The cross-validation R-squared value (\code{Rxv}).
+\item \code{landscape_data.Rds}: Optional stable Kriging mean/median model
+objects, written only when \code{landscape_data_output = TRUE}.
 }
 }
 \description{
