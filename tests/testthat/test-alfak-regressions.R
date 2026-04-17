@@ -197,6 +197,18 @@ test_that("count-matrix validation rejects invalid values and rounds non-integer
     "non-negative count values"
   )
 
+  x_integer_like <- data.frame(
+    "0" = c(10 + alfakR:::ALFAK_COUNT_INTEGER_TOL / 2, 15 - alfakR:::ALFAK_COUNT_INTEGER_TOL / 2),
+    "1" = c(9 + alfakR:::ALFAK_COUNT_INTEGER_TOL / 3, 14 - alfakR:::ALFAK_COUNT_INTEGER_TOL / 3),
+    row.names = c("2.2.2", "2.2.1"),
+    check.names = FALSE
+  )
+  expect_warning(
+    rounded_integer_like <- alfakR:::coerce_count_matrix(x_integer_like),
+    "Integer-like floating-point values"
+  )
+  expect_equal(rounded_integer_like, round(as.matrix(x_integer_like)))
+
   x_non_integer <- data.frame(
     "0" = c(10.2, 15.7),
     "1" = c(9.8, 14.3),
@@ -266,8 +278,8 @@ test_that("alfak validates optional arguments before running heavy work", {
         outdir = tempfile("alfak_default_passage_"),
         minobs = 1,
         nboot = 1,
-        n0 = 1e4,
-        nb = 1e6,
+        n0 = 1e4 + 0.5,
+        nb = 1e6 + 0.5,
         pm = 1e-4
       ))
       expect_identical(returned, 0.1)
@@ -278,6 +290,7 @@ test_that("alfak validates optional arguments before running heavy work", {
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 0, nb = 1e6, pm = 1e-4), "`n0`")
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = Inf, nb = 1e6, pm = 1e-4), "`n0`")
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 1e4, nb = NA_real_, pm = 1e-4), "`nb`")
+      expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = Inf), "`pm`")
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = NA), "`correct_efflux`")
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = "TRUE"), "`correct_efflux`")
       expect_error(alfakR::alfak(yi = yi, outdir = tempfile(), minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = 1), "`correct_efflux`")
@@ -324,6 +337,7 @@ test_that("solve_fitness_bootstrap validates bootstrap controls and pm before ne
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 0, nb = 1e6, pm = 1e-4), "`n0`")
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = NA_real_, pm = 1e-4), "`nb`")
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = NA_real_), "`pm`")
+      expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = Inf), "`pm`")
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = NA), "`correct_efflux`")
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = "TRUE"), "`correct_efflux`")
       expect_error(alfakR:::solve_fitness_bootstrap(yi, minobs = 1, nboot = 1, n0 = 1e4, nb = 1e6, pm = 1e-4, correct_efflux = 1), "`correct_efflux`")

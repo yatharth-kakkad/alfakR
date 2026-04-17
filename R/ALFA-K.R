@@ -132,9 +132,9 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
 
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
   validate_positive_integer(nboot, "nboot")
-  validate_positive_integer(n0, "n0")
-  validate_positive_integer(nb, "nb")
-  validate_probability(pm, "pm")
+  validate_positive_finite(n0, "n0")
+  validate_positive_finite(nb, "nb")
+  validate_probability(pm, "pm", upper_inclusive = TRUE)
   validate_scalar_logical(allow_noninteger_counts, "allow_noninteger_counts")
   validate_scalar_logical(correct_efflux, "correct_efflux")
   validate_scalar_logical(landscape_data_output, "landscape_data_output")
@@ -438,13 +438,19 @@ coerce_count_matrix <- function(x, allow_noninteger_counts = FALSE) {
   if (any(x_mat < 0)) {
     stop("`yi$x`/`data$x` must contain non-negative count values.")
   }
-  non_integer <- abs(x_mat - round(x_mat)) > ALFAK_COUNT_INTEGER_TOL
+  rounded_mat <- round(x_mat)
+  rounding_delta <- abs(x_mat - rounded_mat)
+  near_integer <- rounding_delta > 0 & rounding_delta <= ALFAK_COUNT_INTEGER_TOL
+  non_integer <- rounding_delta > ALFAK_COUNT_INTEGER_TOL
   if (any(non_integer)) {
     if (!isTRUE(allow_noninteger_counts)) {
       stop("Non-integer values detected in `yi$x`/`data$x`; set `allow_noninteger_counts = TRUE` to round once at entry.", call. = FALSE)
     }
     warning("Non-integer values detected in `yi$x`/`data$x`; rounding to the nearest integer once at entry.")
-    x_mat <- round(x_mat)
+    x_mat <- rounded_mat
+  } else if (any(near_integer)) {
+    warning("Integer-like floating-point values detected in `yi$x`/`data$x`; rounding to the nearest integer once at entry.")
+    x_mat <- rounded_mat
   }
   x_mat
 }
@@ -932,7 +938,7 @@ logSumExp <- function(v) {
 #' @keywords internal
 #' @noRd
 gen_nn_info <- function(fq, pm = 0.00005) {
-  validate_probability(pm, "pm")
+  validate_probability(pm, "pm", upper_inclusive = TRUE)
   # fq is a character vector of karyotype strings
   nn_matrix <- gen_all_neighbours(fq) # Expects list of strings or char vector
   if(nrow(nn_matrix) == 0) return(list())
@@ -1056,9 +1062,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
   data$x <- coerce_count_matrix(data$x, allow_noninteger_counts = allow_noninteger_counts)
   validate_positive_depth(data$x)
   validate_positive_integer(nboot, "nboot")
-  validate_positive_integer(n0, "n0")
-  validate_positive_integer(nb, "nb")
-  validate_probability(pm, "pm")
+  validate_positive_finite(n0, "n0")
+  validate_positive_finite(nb, "nb")
+  validate_probability(pm, "pm", upper_inclusive = TRUE)
   validate_scalar_logical(allow_noninteger_counts, "allow_noninteger_counts")
   validate_scalar_logical(correct_efflux, "correct_efflux")
   nn_prior <- validate_nn_prior_mode(nn_prior)
