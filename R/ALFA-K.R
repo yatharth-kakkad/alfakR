@@ -134,7 +134,8 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
     names(Krig_stable) <- c("mean", "median")
     saveRDS(Krig_stable, file = file.path(outdir, "landscape_data.Rds"))
   }
-  Rxv <- xval(fq_boot)
+  xval_res <- xval(fq_boot)
+  Rxv <- extract_xval_r2r(xval_res)
   saveRDS(Rxv, file = file.path(outdir, "xval.Rds"))
 
   ##END HERE.
@@ -175,6 +176,21 @@ R2R <- function(obs, pred) {
   obs <- obs - mean(obs)
   pred <- pred - mean(pred)
   1 - sum((pred - obs)^2) / sum((obs - mean(obs))^2)
+}
+
+#' Extract the scalar R2R value from xval() output
+#' @keywords internal
+#' @noRd
+extract_xval_r2r <- function(xval_result) {
+  if (is.list(xval_result) && !is.null(xval_result$R2R)) {
+    r2r_val <- xval_result$R2R
+  } else {
+    r2r_val <- xval_result
+  }
+  if (!is.numeric(r2r_val) || length(r2r_val) != 1 || !is.finite(r2r_val)) {
+    stop("`xval()` must return a single finite numeric R2R value or a list containing `R2R`.")
+  }
+  as.numeric(r2r_val)
 }
 
 ALFAK_FEXP_DELTA_TOL <- 1e-8
