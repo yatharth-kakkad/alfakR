@@ -205,6 +205,25 @@ Rcpp::List run_karyotype_abm(
     double      grf_lambda                  = NA_REAL
 )
 {
+  if (!R_finite(p_missegregation) || p_missegregation < 0.0 || p_missegregation > 1.0) {
+    Rcpp::stop("`p_missegregation` must be finite and in [0, 1].");
+  }
+  if (!R_finite(dt) || dt <= 0.0) {
+    Rcpp::stop("`dt` must be a positive finite value.");
+  }
+  if (n_steps < 0) {
+    Rcpp::stop("`n_steps` must be non-negative.");
+  }
+  if (!R_finite(culling_survival_fraction) || culling_survival_fraction < 0.0 || culling_survival_fraction > 1.0) {
+    Rcpp::stop("`culling_survival_fraction` must be finite and in [0, 1].");
+  }
+  if (record_interval == 0) {
+    Rcpp::stop("`record_interval` must not be zero.");
+  }
+  if (grf_centroids.nrow() > 0 && (!R_finite(grf_lambda) || grf_lambda <= 0.0)) {
+    Rcpp::stop("`grf_lambda` must be a positive finite value when GRF centroids are supplied.");
+  }
+
   PopulationMap population;
   FitnessMap fitness_map; 
   std::mt19937 rng_engine;
@@ -344,6 +363,7 @@ Rcpp::List run_karyotype_abm(
   
   std::poisson_distribution<long long> poisson_dist;
   std::binomial_distribution<long long> binomial_dist_ll;
+  bool warned_large_dt = false;
   
   for (int step = 1; step <= n_steps; ++step) {
     if (population.empty()) {
@@ -371,11 +391,13 @@ Rcpp::List run_karyotype_abm(
         : get_fitness_abm(parent_cn, fitness_map);
       
       
-      if (fitness <= 0 && parent_count > 0) { // Only process if fitness > 0 for divisions
-        net_changes_this_step[parent_cn] -= parent_count; // Cells die or don't divide
-        continue;
+      if (fitness <= 0) {
+        continue; // Non-positive fitness means no division in the current ABM.
       }
-      if (fitness <= 0) continue; // Skip if no chance of division
+      if (!warned_large_dt && fitness * dt > 0.1) {
+        Rcpp::warning("ABM time step may be too large: fitness * dt > 0.1; growth may be underestimated.");
+        warned_large_dt = true;
+      }
       
       double expected_divisions = static_cast<double>(parent_count) * fitness * dt;
       if (expected_divisions < 0) expected_divisions = 0; // Should not happen if fitness > 0
@@ -400,8 +422,8 @@ Rcpp::List run_karyotype_abm(
       for (long long div_idx = 0; div_idx < n_divs; ++div_idx) {
         int k_errors_this_division = 0;
         if (n_chrom_total_parent > 0 && p_missegregation > 0) { // Only attempt binomial if possible errors
-          std::binomial_distribution<int> division_error_count_dist(n_chrom_total_parent, p_missegregation); // Errors per chromosome
-          k_errors_this_division = division_error_count_dist(rng_engine); // Number of chromosomes that missegregate
+          std::binomial_distribution<long long> division_error_count_dist(n_chrom_total_parent, p_missegregation);
+          k_errors_this_division = static_cast<int>(division_error_count_dist(rng_engine));
         }
         
         std::pair<std::vector<int>, std::vector<int>> daughters =

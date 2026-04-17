@@ -32,10 +32,6 @@ pij <- function(i, j, beta) {
     .Call(`_alfakR_pij`, i, j, beta)
 }
 
-s2v <- function(s) {
-    .Call(`_alfakR_s2v`, s)
-}
-
 get_A_inputs <- function(k_str, beta, Nmax_ = NULL) {
     .Call(`_alfakR_get_A_inputs`, k_str, beta, Nmax_)
 }

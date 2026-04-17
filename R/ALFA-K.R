@@ -108,7 +108,7 @@
 #' # Clean up
 #' unlink(temp_output_dir, recursive = TRUE)
 #' }
-alfak <- function(yi, outdir, passage_times, minobs = 20,
+alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
                   nboot = 45,
                   n0 = 1e5,
                   nb = 1e7,
@@ -122,12 +122,16 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
-  if (!is.logical(landscape_data_output) || length(landscape_data_output) != 1 || is.na(landscape_data_output)) {
-    stop("`landscape_data_output` must be a single TRUE/FALSE value.")
-  }
+  validate_positive_integer(nboot, "nboot")
+  validate_positive_integer(n0, "n0")
+  validate_positive_integer(nb, "nb")
+  validate_probability(pm, "pm")
+  validate_scalar_logical(correct_efflux, "correct_efflux")
+  validate_scalar_logical(landscape_data_output, "landscape_data_output")
   nn_prior <- validate_nn_prior_mode(nn_prior)
   validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
   yi$x <- coerce_count_matrix(yi$x)
+  validate_positive_depth(yi$x)
 
   get_frequent_karyotypes(yi$x, minobs)
   resolve_time_axis(yi, passage_times)
@@ -184,15 +188,60 @@ pij <- function(i, j, beta) {
 #' Convert string like "1.2.3" to numeric vector
 #' @keywords internal
 #' @noRd
-s2v <- function(s) as.numeric(unlist(strsplit(s, split = "[.]")))
+parse_karyotype_ids <- function(ids) {
+  if (!is.character(ids) || length(ids) == 0 || any(!nzchar(ids))) {
+    stop("Karyotype IDs must be non-empty character strings.", call. = FALSE)
+  }
+  if (anyDuplicated(ids)) {
+    stop("Karyotype IDs must be unique.", call. = FALSE)
+  }
+  pieces <- strsplit(ids, "\\.", perl = TRUE)
+  lens <- lengths(pieces)
+  if (any(lens == 0) || length(unique(lens)) != 1) {
+    stop(
+      "All karyotype IDs must have the same number of dot-separated components.",
+      call. = FALSE
+    )
+  }
+  bad <- vapply(pieces, function(x) any(!grepl("^[1-9][0-9]*$", x)), logical(1))
+  if (any(bad)) {
+    stop(
+      sprintf("Invalid karyotype ID(s): %s", paste(ids[bad], collapse = ", ")),
+      call. = FALSE
+    )
+  }
+  mat <- matrix(as.integer(unlist(pieces, use.names = FALSE)), nrow = length(ids), byrow = TRUE)
+  storage.mode(mat) <- "integer"
+  rownames(mat) <- ids
+  mat
+}
+
+#' Convert string like "1.2.3" to numeric vector
+#' @keywords internal
+#' @noRd
+s2v <- function(s) {
+  parsed <- parse_karyotype_ids(as.character(s))
+  if (nrow(parsed) == 1) {
+    return(as.numeric(parsed[1, ]))
+  }
+  parsed
+}
 
 #' Calculate R-squared
 #' @keywords internal
 #' @noRd
 R2R <- function(obs, pred) {
-  obs <- obs - mean(obs)
-  pred <- pred - mean(pred)
-  1 - sum((pred - obs)^2) / sum((obs - mean(obs))^2)
+  valid <- is.finite(obs) & is.finite(pred)
+  obs <- obs[valid]
+  pred <- pred[valid]
+  if (length(obs) < 2) {
+    return(NA_real_)
+  }
+  denom <- sum((obs - mean(obs))^2)
+  if (!is.finite(denom) || denom <= 0) {
+    return(NA_real_)
+  }
+  1 - sum((pred - obs)^2) / denom
 }
 
 #' Extract the scalar R2R value from xval() output
@@ -204,7 +253,7 @@ extract_xval_r2r <- function(xval_result) {
   } else {
     r2r_val <- xval_result
   }
-  if (!is.numeric(r2r_val) || length(r2r_val) != 1 || is.infinite(r2r_val)) {
+  if (!is.numeric(r2r_val) || length(r2r_val) != 1 || is.nan(r2r_val) || is.infinite(r2r_val)) {
     stop("`xval()` must return a single numeric R2R value, optionally `NA_real_`, or a list containing scalar `R2R`.")
   }
   as.numeric(r2r_val)
@@ -215,6 +264,117 @@ ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
 ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
 ALFAK_COUNT_INTEGER_TOL <- sqrt(.Machine$double.eps)
 ALFAK_KRIG_NSTEP_CV <- 200L
+
+#' Validate scalar positive integer input
+#' @keywords internal
+#' @noRd
+validate_positive_integer <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 1 || x != floor(x)) {
+    stop(sprintf("`%s` must be a single positive integer.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate scalar positive finite numeric input
+#' @keywords internal
+#' @noRd
+validate_positive_finite <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x <= 0) {
+    stop(sprintf("`%s` must be a single positive finite numeric value.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate scalar logical input
+#' @keywords internal
+#' @noRd
+validate_scalar_logical <- function(x, name) {
+  if (!is.logical(x) || length(x) != 1 || is.na(x)) {
+    stop(sprintf("`%s` must be a single TRUE/FALSE value.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate scalar probability input
+#' @keywords internal
+#' @noRd
+validate_probability <- function(x, name, upper_inclusive = FALSE) {
+  upper_ok <- if (upper_inclusive) isTRUE(x <= 1) else isTRUE(x < 1)
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 0 || !upper_ok) {
+    bound <- if (upper_inclusive) "[0, 1]" else "[0, 1)"
+    stop(sprintf("`%s` must be a single finite numeric value in %s.", name, bound), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate that every timepoint has positive sequencing depth
+#' @keywords internal
+#' @noRd
+validate_positive_depth <- function(x) {
+  zero_depth <- colSums(x) == 0
+  if (any(zero_depth)) {
+    depth_names <- colnames(x)
+    if (is.null(depth_names)) {
+      depth_names <- as.character(seq_len(ncol(x)))
+    }
+    stop(
+      sprintf(
+        paste0(
+          "Each timepoint must have positive total counts; zero-depth column(s): %s. ",
+          "Remove or explicitly impute missing timepoints."
+        ),
+        paste(depth_names[zero_depth], collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(NULL)
+}
+
+#' Numerically stable softmax
+#' @keywords internal
+#' @noRd
+softmax <- function(z) {
+  if (!all(is.finite(z))) {
+    stop("Cannot softmax non-finite logits.", call. = FALSE)
+  }
+  z <- z - max(z)
+  ex <- exp(z)
+  ex / sum(ex)
+}
+
+#' Safe mean that returns NA for all-missing vectors
+#' @keywords internal
+#' @noRd
+mean_or_na <- function(x) {
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(NA_real_)
+  }
+  mean(x)
+}
+
+#' Safe median that returns NA for all-missing vectors
+#' @keywords internal
+#' @noRd
+median_or_na <- function(x) {
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(NA_real_)
+  }
+  stats::median(x)
+}
+
+#' Safe standard deviation that returns NA when fewer than 2 finite values exist
+#' @keywords internal
+#' @noRd
+sd_or_na <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2) {
+    return(NA_real_)
+  }
+  stats::sd(x)
+}
 
 #' Validate nearest-neighbour prior mode
 #' @keywords internal
@@ -227,14 +387,10 @@ validate_nn_prior_mode <- function(nn_prior) {
 #' @keywords internal
 #' @noRd
 validate_nn_prior_controls <- function(nn_prior_sd = NULL, nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
-  if (!is.null(nn_prior_sd) &&
-      (!is.numeric(nn_prior_sd) || length(nn_prior_sd) != 1 || is.na(nn_prior_sd) || !is.finite(nn_prior_sd) || nn_prior_sd <= 0)) {
-    stop("`nn_prior_sd` must be NULL or a single positive finite numeric value.")
+  if (!is.null(nn_prior_sd)) {
+    validate_positive_finite(nn_prior_sd, "nn_prior_sd")
   }
-  if (!is.numeric(nn_prior_sd_floor) || length(nn_prior_sd_floor) != 1 || is.na(nn_prior_sd_floor) ||
-      !is.finite(nn_prior_sd_floor) || nn_prior_sd_floor <= 0) {
-    stop("`nn_prior_sd_floor` must be a single positive finite numeric value.")
-  }
+  validate_positive_finite(nn_prior_sd_floor, "nn_prior_sd_floor")
   invisible(NULL)
 }
 
@@ -326,6 +482,7 @@ get_frequent_karyotypes <- function(x, minobs) {
   if (is.null(rownames(x)) || any(!nzchar(rownames(x)))) {
     stop("`yi$x`/`data$x` must have non-empty rownames for karyotype IDs.")
   }
+  parse_karyotype_ids(rownames(x))
   if (!is.numeric(minobs) || length(minobs) != 1 || !is.finite(minobs) || minobs < 0) {
     stop("`minobs` must be a single non-negative finite numeric value.")
   }
@@ -389,13 +546,9 @@ resolve_time_axis <- function(data, passage_times = NULL) {
 #' @keywords internal
 #' @noRd
 normalize_columns <- function(count_matrix) {
+  validate_positive_depth(count_matrix)
   totals <- colSums(count_matrix)
-  denom <- ifelse(totals == 0, 1, totals)
-  freq_matrix <- sweep(count_matrix, 2, denom, "/")
-  if (any(totals == 0)) {
-    freq_matrix[, totals == 0] <- 0
-  }
-  freq_matrix
+  sweep(count_matrix, 2, totals, "/")
 }
 
 #' Validate viability for efflux correction once before bootstrapping
@@ -538,8 +691,10 @@ fExp_stable <- function(fc_arg, fp_arg, pij_val, tt_arg, tol = ALFAK_FEXP_DELTA_
 #' @keywords internal
 #' @noRd
 gen_all_neighbours <- function(ids, as.strings = TRUE, remove_nullisomes = TRUE) {
-  if (as.strings)
-    ids <- lapply(ids, function(ii) as.numeric(unlist(strsplit(ii, split = "[.]"))))
+  if (as.strings) {
+    parsed_ids <- parse_karyotype_ids(as.character(ids))
+    ids <- lapply(seq_len(nrow(parsed_ids)), function(i) as.numeric(parsed_ids[i, ]))
+  }
   nkern <- do.call(rbind, lapply(1:length(ids[[1]]), function(i) {
     x0 <- rep(0, length(ids[[1]]))
     x1 <- x0
@@ -730,6 +885,7 @@ logSumExp <- function(v) {
 #' @keywords internal
 #' @noRd
 gen_nn_info <- function(fq, pm = 0.00005) {
+  validate_probability(pm, "pm")
   # fq is a character vector of karyotype strings
   nn_matrix <- gen_all_neighbours(fq) # Expects list of strings or char vector
   if(nrow(nn_matrix) == 0) return(list())
@@ -745,9 +901,9 @@ gen_nn_info <- function(fq, pm = 0.00005) {
     }
     nj_filtered <- nj_strings_inner[nj_strings_inner %in% fq] # Renamed nj
 
-    nivec <- s2v(ni_string)
+    nivec <- as.numeric(parse_karyotype_ids(ni_string)[1, ])
     pij_vals <- sapply(nj_filtered, function(si_string) { # Renamed si to si_string
-      si_vec <- as.numeric(unlist(strsplit(si_string, split = "[.]")))
+      si_vec <- as.numeric(parse_karyotype_ids(si_string)[1, ])
       prod(sapply(1:length(si_vec), function(k) pij(si_vec[k], nivec[k], pm)))
     })
     list(ni = ni_string, nj = nj_filtered, pij = pij_vals)
@@ -782,8 +938,7 @@ joint_optimize <- function(counts, timepoints, f_init, x0_init) {
   f_free_opt <- opt$par[seq_len(K - 1)]
   f_opt <- c(f_free_opt, -sum(f_free_opt))
   log_x0_opt <- opt$par[K:(2 * K - 1)]
-  x0_opt <- exp(log_x0_opt)
-  x0_opt <- x0_opt / sum(x0_opt)
+  x0_opt <- softmax(log_x0_opt)
   list(f = f_opt, x0 = x0_opt)
 }
 
@@ -802,8 +957,7 @@ optimize_initial_frequencies <- function(x_obs, f, timepoints) {
     return(1)
   }
   loss_function <- function(log_x0) {
-    x0 <- exp(log_x0)
-    x0 <- x0 / sum(x0)
+    x0 <- softmax(log_x0)
     x_pred <- project_forward_log(x0, f, timepoints)
     sum((x_pred - x_obs)^2)
   }
@@ -813,8 +967,7 @@ optimize_initial_frequencies <- function(x_obs, f, timepoints) {
                                   method = "BFGS",
                                   control = list(maxit = 500, reltol = 1e-8),
                                   context = "optimize_initial_frequencies")
-  x0_opt <- exp(opt_result$par)
-  x0_opt / sum(x0_opt)
+  softmax(opt_result$par)
 }
 
 #' Find "birth times" for species based on reaching a minimum frequency
@@ -853,6 +1006,12 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
                                     nn_prior_sd = NULL,
                                     nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
   data$x <- coerce_count_matrix(data$x)
+  validate_positive_depth(data$x)
+  validate_positive_integer(nboot, "nboot")
+  validate_positive_integer(n0, "n0")
+  validate_positive_integer(nb, "nb")
+  validate_probability(pm, "pm")
+  validate_scalar_logical(correct_efflux, "correct_efflux")
   nn_prior <- validate_nn_prior_mode(nn_prior)
   validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
   fq <- get_frequent_karyotypes(data$x, minobs)
@@ -1034,8 +1193,15 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 
     if (use_empirical_prior && any(!nn_present) && length(fc_prior_vals) > 0 && !all(is.na(fc_prior_vals))) {
       mean_fc_prior_val <- mean(fc_prior_vals, na.rm = TRUE) # Renamed mean_fc_prior
-      sd_fc_prior_val <- if (!is.null(nn_prior_sd)) nn_prior_sd else sd(fc_prior_vals, na.rm = TRUE)
-      if(is.na(sd_fc_prior_val) || sd_fc_prior_val == 0) sd_fc_prior_val <- nn_prior_sd_floor
+      if (is.null(nn_prior_sd)) {
+        sd_fc_prior_val <- stats::sd(fc_prior_vals, na.rm = TRUE)
+        if (!is.finite(sd_fc_prior_val)) {
+          sd_fc_prior_val <- nn_prior_sd_floor
+        }
+        sd_fc_prior_val <- max(sd_fc_prior_val, nn_prior_sd_floor)
+      } else {
+        sd_fc_prior_val <- nn_prior_sd
+      }
 
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
@@ -1073,7 +1239,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
   }
 
   # Run bootstrap iterations serially using lapply
-  boot_list <- lapply(1:nboot, bootstrap_iter,
+  boot_list <- lapply(seq_len(nboot), bootstrap_iter,
                       current_data = data, current_fq = fq, current_timepoints = timepoints,
                       current_num_species = num_species, current_num_timepoints = num_timepoints,
                       current_epsilon = epsilon, current_n0 = n0, current_nb = nb,
@@ -1111,6 +1277,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 #' @keywords internal
 #' @noRd
 fitKrig <- function(fq_boot, nboot) {
+  validate_positive_integer(nboot, "nboot")
   fboot <- cbind(fq_boot$final_fitness, fq_boot$nn_fitness)
   fq_str <- colnames(fq_boot$final_fitness)
   nn_str <- colnames(fq_boot$nn_fitness) # Will be NULL if nn_fitness is NULL or has no colnames
@@ -1131,7 +1298,7 @@ fitKrig <- function(fq_boot, nboot) {
                 krig_stable_mean = NULL,
                 krig_stable_median = NULL))
   }
-  ktrain <- do.call(rbind, lapply(combined_strs, s2v))
+  ktrain <- unname(parse_karyotype_ids(combined_strs))
 
   # Ensure nn_str is not NULL before passing to gen_all_neighbours
   ktest_neighbours_matrix <- matrix(numeric(0), ncol=ncol(ktrain)) # empty matrix with correct cols
@@ -1176,7 +1343,7 @@ fitKrig <- function(fq_boot, nboot) {
   boot_fit_cache <- new.env(parent = emptyenv())
 
   # Use lapply directly, as cl is removed
-  boot_predictions_list <- lapply(1:nboot, function(b) {
+  boot_predictions_list <- lapply(seq_len(nboot), function(b) {
     # Original sampling strategy to avoid spatially correlated errors
     boot_f_indices <- cbind(sample(1:nrow(fboot), ncol(fboot), replace = TRUE), 1:ncol(fboot))
     boot_f <- as.vector(fboot[boot_f_indices])
@@ -1246,9 +1413,9 @@ fitKrig <- function(fq_boot, nboot) {
     pred_medians <- rep(NA_real_, length(ktest_str))
     pred_sd <- rep(NA_real_, length(ktest_str))
   } else {
-    pred_means <- apply(boot_predictions, 1, mean, na.rm = TRUE) # Add na.rm=TRUE
-    pred_medians <- apply(boot_predictions, 1, stats::median, na.rm = TRUE) # Add na.rm=TRUE
-    pred_sd <- apply(boot_predictions, 1, stats::sd, na.rm = TRUE) # Add na.rm=TRUE
+    pred_means <- apply(boot_predictions, 1, mean_or_na)
+    pred_medians <- apply(boot_predictions, 1, median_or_na)
+    pred_sd <- apply(boot_predictions, 1, sd_or_na)
   }
 
   summary_df <- data.frame(k = ktest_str, mean = pred_means, median = pred_medians, sd = pred_sd,
@@ -1281,7 +1448,7 @@ xval <- function(fq_boot) {
     warning("xval: No valid fitness data to perform cross-validation.")
     return(NA_real_)
   }
-  ktrain <- do.call(rbind, lapply(combined_strs, s2v))
+  ktrain <- unname(parse_karyotype_ids(combined_strs))
 
   # Original ids logic for xval
   if(length(valid_fq_str) == 0) {
@@ -1289,7 +1456,7 @@ xval <- function(fq_boot) {
     return(NA_real_)
   }
 
-  ids <- unlist(lapply(1:length(valid_fq_str), function(i_xval) {
+  ids <- unlist(lapply(seq_along(valid_fq_str), function(i_xval) {
     ki_neighbours_matrix <- gen_all_neighbours(valid_fq_str[i_xval])
     ki_neighbours_str <- character(0)
     if(nrow(ki_neighbours_matrix) > 0) {
@@ -1343,18 +1510,23 @@ xval <- function(fq_boot) {
     test_f <- fi[test_k_names_valid]
 
     # Filter NAs from training data, which could arise if some fi values were NA
-    valid_train_points <- !is.na(train_f)
+    valid_train_points <- is.finite(train_f)
     train_k <- train_k[valid_train_points, , drop=FALSE]
     train_f <- train_f[valid_train_points]
 
-    if(nrow(train_k) < 2 || nrow(unique(train_k)) < 2 || length(unique(train_f))<1) { # Krig needs some variation
+    if(nrow(train_k) < 2 || nrow(unique(train_k)) < 2 || length(unique(train_f)) < 2) {
       warning(paste("Skipping xval fold for id_fold:", id_fold, "due to insufficient/non-unique training points after NA removal."))
       return(cbind(test_f = test_f, est_f = rep(NA, length(test_f))))
     }
 
-    fit_cache <- build_cached_krig_fit(train_k, train_f, kpred = test_k, give_warnings = TRUE)
-    fit <- fit_cache$fit
-    est_f <- predict_cached_krig(fit, test_k, dist_mat = fit_cache$pred_dist)
+    est_f <- tryCatch({
+      fit_cache <- build_cached_krig_fit(train_k, train_f, kpred = test_k, give_warnings = TRUE)
+      fit <- fit_cache$fit
+      predict_cached_krig(fit, test_k, dist_mat = fit_cache$pred_dist)
+    }, error = function(e) {
+      warning(sprintf("xval fold fit failed for fold %s and will return NA predictions: %s", id_fold, e$message))
+      rep(NA_real_, length(test_f))
+    })
     cbind(test_f, est_f)
   })
 

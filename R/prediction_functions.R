@@ -20,81 +20,7 @@
 #' @keywords internal
 #' @noRd
 parse_karyotypes <- function(kvec) {
-  if(!is.character(kvec)) stop("Input 'kvec' must be a character vector.", call. = FALSE)
-  if(length(kvec) == 0) return(matrix(integer(0), ncol = 0, nrow = 0)) # Handle empty input
-  
-  split_chr <- strsplit(kvec, "[.]", perl = TRUE)
-  
-  # Determine expected length from the first non-empty, parsable string
-  expected_len <- -1
-  first_valid_k_for_len <- NULL
-  for(i in seq_along(split_chr)){
-    if(length(split_chr[[i]]) > 0 && !all(split_chr[[i]] == "")){
-      expected_len <- length(split_chr[[i]])
-      first_valid_k_for_len <- kvec[i]
-      break
-    }
-  }
-  
-  if (expected_len == -1) { # All strings were empty or only dots
-    if(all(sapply(kvec, function(s) s == "" || grepl("^\\.*$", s)))){
-      # If all strings are truly empty or just dots, return empty matrix with 0 cols (or error)
-      warning("All karyotype strings are empty or malformed (e.g. '...'). Cannot determine chromosome count.", call. = FALSE)
-      return(matrix(integer(0), ncol = 0, nrow = length(kvec)))
-    }
-    stop("Cannot determine number of chromosome types from input 'kvec'. First element was problematic.", call. = FALSE)
-  }
-  if (expected_len == 0 && !is.null(first_valid_k_for_len) && nchar(first_valid_k_for_len)>0 ) {
-    # This case implies the first string was e.g. "." which split into 0 length useful segments.
-    stop(sprintf("First parsable karyotype string '%s' resulted in 0 chromosome types. Check format.", first_valid_k_for_len), call. = FALSE)
-  }
-  
-  
-  len_ok <- vapply(split_chr, length, integer(1)) == expected_len
-  if (!all(len_ok)) {
-    stop(sprintf("All karyotypes must have the same number of integers (expected %d, derived from first valid karyotype). Problem at input indices: %s",
-                 expected_len, paste(which(!len_ok), collapse=", ")), call. = FALSE)
-  }
-  
-  # Suppressing potential warnings from as.numeric on non-numbers, error handles it
-  num_values <- unlist(split_chr, use.names = FALSE)
-  if (length(num_values) == 0 && length(kvec) > 0) { # e.g. kvec was list("", "") and expected_len became 0
-    # This state means expected_len was probably 0 from something like kvec = c("", "")
-    # which should have been caught by earlier checks for expected_len.
-    # If expected_len is > 0, then num_values cannot be empty if all len_ok.
-    if(expected_len > 0) stop("Internal error: num_values became empty despite passing length checks.", call. = FALSE)
-    # If expected_len was 0 (e.g. kvec=c("")), create 0-col matrix
-    return(matrix(integer(0), nrow=length(kvec), ncol=0))
-  }
-  
-  
-  mat_num <- tryCatch(
-    matrix(as.numeric(num_values), ncol = expected_len, byrow = TRUE),
-    warning = function(w) {
-      if (grepl("NAs introduced by coercion", w$message, fixed = TRUE)) {
-        stop("Non-numeric values in karyotype strings led to NAs during numeric conversion.", call. = FALSE)
-      }
-      warning(w) 
-      matrix(NA_real_, ncol = expected_len, nrow = length(split_chr)) 
-    }
-  )
-  
-  if (anyNA(mat_num)) stop("Parsing failed: Non-numeric values found or NAs introduced.", call. = FALSE)
-  
-  # Check if numbers are actual integers after as.numeric
-  # Compare with rounded version. If not equal, then it wasn't an integer.
-  if (!all(mat_num == round(mat_num), na.rm = TRUE)) { # Check for non-integer numbers
-    stop("Parsing failed: Karyotype components must be whole numbers.", call. = FALSE)
-  }
-  
-  mat <- apply(mat_num, 2, as.integer) 
-  if (anyNA(mat) && !anyNA(mat_num)) { # Should not happen if previous check passes
-    stop("Internal error: Karyotype components could not be coerced to integer without NA, despite being whole numbers.", call. = FALSE)
-  }
-  
-  if (any(mat <= 0, na.rm = TRUE)) stop("Parsing failed: Karyotype components must be positive integers.", call. = FALSE)
-  storage.mode(mat) <- "integer"
-  mat
+  parse_karyotype_ids(kvec)
 }
 
 #' Convert Integer Vector Karyotype to String Tag (Internal)
@@ -104,6 +30,79 @@ parse_karyotypes <- function(kvec) {
 #' @noRd
 vec_to_tag <- function(v) {
   paste(v, collapse = ".")
+}
+
+validate_finite_numeric_vector <- function(x, name, allow_empty = FALSE) {
+  if (!is.numeric(x) || (!allow_empty && length(x) == 0) || any(!is.finite(x))) {
+    qualifier <- if (allow_empty) "a numeric vector containing only finite values" else "a non-empty numeric vector containing only finite values"
+    stop(sprintf("`%s` must be %s.", name, qualifier), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_scalar_finite_number <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x)) {
+    stop(sprintf("`%s` must be a single finite numeric value.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_probability_closed <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 0 || x > 1) {
+    stop(sprintf("`%s` must be a single finite numeric value in [0, 1].", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_times_vector <- function(times, name = "times", non_negative = FALSE) {
+  validate_finite_numeric_vector(times, name)
+  if (is.unsorted(times, strictly = FALSE)) {
+    stop(sprintf("`%s` must be sorted in non-decreasing order.", name), call. = FALSE)
+  }
+  if (non_negative && any(times < 0)) {
+    stop(sprintf("`%s` must contain only non-negative timepoints for ABM simulation.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_integerish_scalar <- function(x, name, min_value = NULL, allow_zero = FALSE) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x != floor(x)) {
+    stop(sprintf("`%s` must be a single finite integer-like value.", name), call. = FALSE)
+  }
+  if (!is.null(min_value)) {
+    if (allow_zero) {
+      if (x < min_value) {
+        stop(sprintf("`%s` must be >= %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+      }
+    } else if (x <= min_value) {
+      stop(sprintf("`%s` must be > %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+    }
+  }
+  invisible(NULL)
+}
+
+validate_named_frequency_vector <- function(x, expected_names = NULL, expected_dim = NULL, name = "x0") {
+  validate_finite_numeric_vector(x, name)
+  if (is.null(names(x)) || any(!nzchar(names(x)))) {
+    stop(sprintf("`%s` must be a named numeric vector.", name), call. = FALSE)
+  }
+  if (anyDuplicated(names(x))) {
+    stop(sprintf("`%s` must not contain duplicate names.", name), call. = FALSE)
+  }
+  if (any(x < 0)) {
+    stop(sprintf("`%s` must contain only non-negative values.", name), call. = FALSE)
+  }
+  if (abs(sum(x) - 1) > 1e-6) {
+    stop(sprintf("`%s` must sum to 1 (within tolerance).", name), call. = FALSE)
+  }
+  parsed <- parse_karyotype_ids(names(x))
+  if (!is.null(expected_dim) && ncol(parsed) != expected_dim) {
+    stop(sprintf("Karyotype names in `%s` do not have %d chromosome counts.", name, expected_dim), call. = FALSE)
+  }
+  if (!is.null(expected_names) && !setequal(names(x), expected_names)) {
+    stop(sprintf("Names of `%s` must exactly match the karyotypes in `lscape$k`.", name), call. = FALSE)
+  }
+  invisible(parsed)
 }
 
 # -------------------------------------------------------------
@@ -125,6 +124,11 @@ vec_to_tag <- function(v) {
 #' }
 #' 
 build_W_rcpp <- function(karyotype_strings, p,Nmax=Inf) {
+  parse_karyotype_ids(karyotype_strings)
+  validate_probability_closed(p, "p")
+  if (!(is.infinite(Nmax) || (is.numeric(Nmax) && length(Nmax) == 1 && is.finite(Nmax) && Nmax >= 0))) {
+    stop("`Nmax` must be Inf or a non-negative finite number.", call. = FALSE)
+  }
   w_structure <- tryCatch(
     get_A_inputs(karyotype_strings,p,Nmax), # C++ function
     error = function(e) stop("Error in get_A_inputs(C++ call): ", e$message, call. = FALSE)
@@ -216,6 +220,32 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
                                abm_record_interval, abm_seed) {
   
   message("Setting up ABM simulation...")
+  if (!is.data.frame(lscape) || !all(c("k", "mean") %in% names(lscape))) {
+    stop("'lscape' must be a data.frame with columns 'k' and 'mean'.", call. = FALSE)
+  }
+  if (!is.character(lscape$k) || length(lscape$k) == 0) {
+    stop("'lscape$k' must be a non-empty character vector.", call. = FALSE)
+  }
+  if (anyDuplicated(lscape$k)) {
+    stop("'lscape$k' must contain unique karyotype strings.", call. = FALSE)
+  }
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
+  if (length(lscape$mean) != length(lscape$k)) {
+    stop("'lscape$mean' must have the same length as 'lscape$k'.", call. = FALSE)
+  }
+  parse_karyotypes(lscape$k)
+  validate_probability_closed(p, "p")
+  validate_times_vector(times, non_negative = TRUE)
+  validate_named_frequency_vector(x0, expected_names = lscape$k)
+  validate_positive_integer(abm_pop_size, "abm_pop_size")
+  validate_positive_finite(abm_delta_t, "abm_delta_t")
+  validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+  validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+  validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+  if (abm_record_interval == 0) {
+    stop("`abm_record_interval` must not be zero.", call. = FALSE)
+  }
+  validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
   
   initial_counts_raw <- x0 * abm_pop_size
   initial_counts <- round(initial_counts_raw) 
@@ -232,7 +262,10 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   
   max_time <- max(times, na.rm = TRUE) 
   num_steps <- ceiling(max_time / abm_delta_t)
-  if (num_steps <= 0) stop("Number of ABM steps is non-positive (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  if (!is.finite(num_steps) || num_steps <= 0) stop("Number of ABM steps is non-positive (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  if (num_steps > .Machine$integer.max) {
+    stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
+  }
   
   message(sprintf("Starting ABM simulation for %d steps (up to time %.2f)...", num_steps, max_time))
   sim_results_list_cpp <- tryCatch(
@@ -427,66 +460,37 @@ predict_evo <- function(lscape, p, times, x0, prediction_type = "ODE",
   if (anyDuplicated(lscape$k)) {
     stop("'lscape$k' contains duplicate karyotype strings. Please provide unique karyotypes in lscape.", call. = FALSE)
   }
-  if (!is.numeric(lscape$mean) || length(lscape$mean) != length(lscape$k)) {
-    stop("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE)
-  }
-  if (!is.numeric(p) || length(p) != 1 || p < 0 || p > 1) {
-    stop("'p' (missegregation probability) must be a single numeric value between 0 and 1.", call. = FALSE)
-  }
-  if (!is.numeric(times) || anyNA(times) || is.unsorted(times, strictly = FALSE)) {
-    stop("'times' must be a sorted numeric vector without NAs.", call. = FALSE)
-  }
-  if (length(times) == 0) stop("'times' must not be empty.", call. = FALSE)
-  
-  if (!is.numeric(x0) || is.null(names(x0))) {
-    stop("'x0' (initial frequencies) must be a named numeric vector.", call. = FALSE)
-  }
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
   if (length(x0) != nrow(lscape)) {
     stop("Length of 'x0' must match the number of rows (karyotypes) in 'lscape'.", call. = FALSE)
   }
-  if(!setequal(names(x0), lscape$k)) {
-    stop("Names of 'x0' must exactly match all unique karyotypes in 'lscape$k'. Order does not matter initially, but all names must be present in both.", call. = FALSE)
-  }
+  validate_probability_closed(p, "p")
+  validate_times_vector(times)
+  validate_named_frequency_vector(x0, expected_names = lscape$k)
+  parse_karyotypes(lscape$k)
   # Reorder x0 to match lscape$k order for consistency downstream
   x0 <- x0[lscape$k] 
   if(anyNA(x0)){ # Check after reordering if any names in lscape$k were not in original x0 names
     stop("Mismatch between names(x0) and lscape$k led to NAs after reordering x0. Ensure all lscape$k are in names(x0).", call. = FALSE)
   }
   
-  if (abs(sum(x0) - 1.0) > 1e-6) stop("'x0' frequencies must sum to 1 (within tolerance).", call. = FALSE)
-  if (any(x0 < -1e-9)) stop("'x0' must contain non-negative frequencies (allowing for small numerical errors near zero).", call. = FALSE) # Allow tiny negatives
-  x0[x0<0] <- 0 # Correct tiny negatives before use
-  
   if (!(prediction_type %in% c("ODE", "ABM"))) stop("'prediction_type' must be either 'ODE' or 'ABM'.", call. = FALSE)
-  
-  # Further validation (moved from internal functions to be user-facing checks)
-  # This implicitly checks karyotype string format and consistency.
-  # If parse_karyotypes fails, it will stop here.
-  parsed_k_for_validation <- parse_karyotypes(lscape$k)
   
   result_df <- NULL 
   if (prediction_type == "ODE") {
     result_df <- run_ode_simulation(lscape = lscape, p = p, times = times, x0 = x0, ode_method = ode_method,Nmax=Nmax)
   } else if (prediction_type == "ABM") {
     # ABM specific parameter validation
-    if (!is.numeric(abm_pop_size) || length(abm_pop_size) != 1 || abm_pop_size <= 0 || floor(abm_pop_size) != abm_pop_size) {
-      stop("'abm_pop_size' must be a single positive integer.", call. = FALSE)
+    validate_times_vector(times, non_negative = TRUE)
+    validate_positive_integer(abm_pop_size, "abm_pop_size")
+    validate_positive_finite(abm_delta_t, "abm_delta_t")
+    validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+    validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+    validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+    if (abm_record_interval == 0) {
+      stop("'abm_record_interval' must not be zero.", call. = FALSE)
     }
-    if (!is.numeric(abm_delta_t) || length(abm_delta_t) != 1 || abm_delta_t <= 0) {
-      stop("'abm_delta_t' must be a single positive number.", call. = FALSE)
-    }
-    if (!is.numeric(abm_max_pop) || length(abm_max_pop) != 1) {
-      stop("'abm_max_pop' must be a single numeric value.", call. = FALSE)
-    }
-    if (!is.numeric(abm_culling_survival) || length(abm_culling_survival) != 1 || abm_culling_survival < 0 || abm_culling_survival > 1) {
-      stop("'abm_culling_survival' must be a single number between 0 and 1.", call. = FALSE)
-    }
-    if (!is.numeric(abm_record_interval) || length(abm_record_interval) != 1 || abm_record_interval <= 0 || floor(abm_record_interval) != abm_record_interval) {
-      stop("'abm_record_interval' must be a single positive integer.", call. = FALSE)
-    }
-    if (!is.numeric(abm_seed) || length(abm_seed) != 1 || floor(abm_seed) != abm_seed ) { # Ensure abm_seed is integer-like
-      stop("'abm_seed' must be a single integer value.", call. = FALSE)
-    }
+    validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
     
     result_df <- run_abm_simulation(lscape = lscape, p = p, times = times, x0 = x0,
                                     abm_pop_size = abm_pop_size, abm_delta_t = abm_delta_t,
@@ -548,20 +552,19 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
   
   # --- Input Validation ---
   if (!is.data.frame(lscape) || !all(c("k", "mean") %in% names(lscape))) {
-    warning("Invalid 'lscape' input: must be a data.frame with 'k' and 'mean' columns.", call. = FALSE); return(NULL)
+    stop("Invalid 'lscape' input: must be a data.frame with 'k' and 'mean' columns.", call. = FALSE)
   }
   if (!is.character(lscape$k) || length(lscape$k) == 0) {
-    warning("'lscape$k' must be a non-empty character vector.", call. = FALSE); return(NULL)
+    stop("'lscape$k' must be a non-empty character vector.", call. = FALSE)
   }
   if (anyDuplicated(lscape$k)) { # Check for duplicates that would cause issues
     stop("'lscape$k' contains duplicate karyotype strings. Steady state calculation requires unique karyotypes in lscape.", call. = FALSE)
   }
-  if (!is.numeric(lscape$mean) || length(lscape$mean) != length(lscape$k)) {
-    warning("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE); return(NULL)
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
+  if (length(lscape$mean) != length(lscape$k)) {
+    stop("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE)
   }
-  if (!is.numeric(p) || length(p) != 1 || p < 0 || p > 1) {
-    warning("'p' (missegregation probability) must be a single numeric value between 0 and 1.", call. = FALSE); return(NULL)
-  }
+  validate_probability_closed(p, "p")
   
   # Validate karyotype strings before passing to C++
   # If parse_karyotypes fails, it will stop.
@@ -710,17 +713,24 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   ## -- validation (same as internal draft, trimmed for brevity) -------------
   if(!is.matrix(centroids) || !is.numeric(centroids) || nrow(centroids) == 0)
     stop("'centroids' must be a non‑empty numeric matrix.", call. = FALSE)
-  if(!is.numeric(lambda) || length(lambda) != 1 || lambda <= 0)
-    stop("'lambda' must be a single positive numeric value.", call. = FALSE)
+  if (any(!is.finite(centroids))) {
+    stop("'centroids' must contain only finite numeric values.", call. = FALSE)
+  }
+  validate_positive_finite(lambda, "lambda")
+  validate_probability_closed(p, "p")
+  validate_times_vector(times, non_negative = TRUE)
+  validate_named_frequency_vector(x0, expected_dim = ncol(centroids))
+  validate_positive_integer(abm_pop_size, "abm_pop_size")
+  validate_positive_finite(abm_delta_t, "abm_delta_t")
+  validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+  validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+  validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+  if (abm_record_interval == 0) {
+    stop("'abm_record_interval' must not be zero.", call. = FALSE)
+  }
+  validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
+  validate_scalar_logical(normalize_freq, "normalize_freq")
   K <- ncol(centroids)
-  
-  parse_len <- function(s) length(strsplit(s, "\\.")[[1]])
-  bad <- names(x0)[vapply(names(x0), parse_len, 0L) != K]
-  if(length(bad))
-    stop("Karyotype names ", paste(bad, collapse = ", "),
-         " do not have ", K, " chromosome counts.", call. = FALSE)
-  if(abs(sum(x0) - 1) > 1e-6)
-    stop("'x0' must sum to 1.", call. = FALSE)
   
   ## -- initial population ----------------------------------------------------
   init_counts <- round(x0 * abm_pop_size)
@@ -730,6 +740,9 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   
   ## -- run C++ ---------------------------------------------------------------
   steps <- ceiling(max(times) / abm_delta_t)
+  if (!is.finite(steps) || steps < 0 || steps > .Machine$integer.max) {
+    stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
+  }
   elapsed <- system.time({
     cpp_res <- run_karyotype_abm(
       initial_population_r      = init_list,

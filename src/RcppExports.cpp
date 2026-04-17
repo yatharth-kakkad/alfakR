@@ -131,40 +131,6 @@ RcppExport SEXP _alfakR_pij(SEXP iSEXP, SEXP jSEXP, SEXP betaSEXP) {
     UNPROTECT(1);
     return rcpp_result_gen;
 }
-// s2v
-IntegerVector s2v(SEXP s);
-static SEXP _alfakR_s2v_try(SEXP sSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::traits::input_parameter< SEXP >::type s(sSEXP);
-    rcpp_result_gen = Rcpp::wrap(s2v(s));
-    return rcpp_result_gen;
-END_RCPP_RETURN_ERROR
-}
-RcppExport SEXP _alfakR_s2v(SEXP sSEXP) {
-    SEXP rcpp_result_gen;
-    {
-        Rcpp::RNGScope rcpp_rngScope_gen;
-        rcpp_result_gen = PROTECT(_alfakR_s2v_try(sSEXP));
-    }
-    Rboolean rcpp_isInterrupt_gen = Rf_inherits(rcpp_result_gen, "interrupted-error");
-    if (rcpp_isInterrupt_gen) {
-        UNPROTECT(1);
-        Rf_onintr();
-    }
-    bool rcpp_isLongjump_gen = Rcpp::internal::isLongjumpSentinel(rcpp_result_gen);
-    if (rcpp_isLongjump_gen) {
-        Rcpp::internal::resumeJump(rcpp_result_gen);
-    }
-    Rboolean rcpp_isError_gen = Rf_inherits(rcpp_result_gen, "try-error");
-    if (rcpp_isError_gen) {
-        SEXP rcpp_msgSEXP_gen = Rf_asChar(rcpp_result_gen);
-        UNPROTECT(1);
-        Rf_error("%s", CHAR(rcpp_msgSEXP_gen));
-    }
-    UNPROTECT(1);
-    return rcpp_result_gen;
-}
 // get_A_inputs
 List get_A_inputs(CharacterVector k_str, double beta, Nullable<double> Nmax_);
 static SEXP _alfakR_get_A_inputs_try(SEXP k_strSEXP, SEXP betaSEXP, SEXP Nmax_SEXP) {
@@ -279,7 +245,6 @@ static int _alfakR_RcppExport_validate(const char* sig) {
     static std::set<std::string> signatures;
     if (signatures.empty()) {
         signatures.insert("double(*pij)(int,int,double)");
-        signatures.insert("IntegerVector(*s2v)(SEXP)");
         signatures.insert("List(*get_A_inputs)(CharacterVector,double,Nullable<double>)");
         signatures.insert("List(*chrmod_cpp)(double,NumericVector,List)");
         signatures.insert("List(*chrmod_rel_cpp)(double,NumericVector,List)");
@@ -290,7 +255,6 @@ static int _alfakR_RcppExport_validate(const char* sig) {
 // registerCCallable (register entry points for exported C++ functions)
 RcppExport SEXP _alfakR_RcppExport_registerCCallable() { 
     R_RegisterCCallable("alfakR", "_alfakR_pij", (DL_FUNC)_alfakR_pij_try);
-    R_RegisterCCallable("alfakR", "_alfakR_s2v", (DL_FUNC)_alfakR_s2v_try);
     R_RegisterCCallable("alfakR", "_alfakR_get_A_inputs", (DL_FUNC)_alfakR_get_A_inputs_try);
     R_RegisterCCallable("alfakR", "_alfakR_chrmod_cpp", (DL_FUNC)_alfakR_chrmod_cpp_try);
     R_RegisterCCallable("alfakR", "_alfakR_chrmod_rel_cpp", (DL_FUNC)_alfakR_chrmod_rel_cpp_try);
@@ -305,7 +269,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"_alfakR_alfak_neighbor_objective_cpp", (DL_FUNC) &_alfakR_alfak_neighbor_objective_cpp, 13},
     {"_alfakR_alfak_qr_accum_cpp", (DL_FUNC) &_alfakR_alfak_qr_accum_cpp, 2},
     {"_alfakR_pij", (DL_FUNC) &_alfakR_pij, 3},
-    {"_alfakR_s2v", (DL_FUNC) &_alfakR_s2v, 1},
     {"_alfakR_get_A_inputs", (DL_FUNC) &_alfakR_get_A_inputs, 3},
     {"_alfakR_chrmod_cpp", (DL_FUNC) &_alfakR_chrmod_cpp, 3},
     {"_alfakR_chrmod_rel_cpp", (DL_FUNC) &_alfakR_chrmod_rel_cpp, 3},

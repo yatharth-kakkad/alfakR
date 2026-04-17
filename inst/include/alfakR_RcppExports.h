@@ -45,27 +45,6 @@ namespace alfakR {
         return Rcpp::as<double >(rcpp_result_gen);
     }
 
-    inline IntegerVector s2v(SEXP s) {
-        typedef SEXP(*Ptr_s2v)(SEXP);
-        static Ptr_s2v p_s2v = NULL;
-        if (p_s2v == NULL) {
-            validateSignature("IntegerVector(*s2v)(SEXP)");
-            p_s2v = (Ptr_s2v)R_GetCCallable("alfakR", "_alfakR_s2v");
-        }
-        RObject rcpp_result_gen;
-        {
-            RNGScope RCPP_rngScope_gen;
-            rcpp_result_gen = p_s2v(Shield<SEXP>(Rcpp::wrap(s)));
-        }
-        if (rcpp_result_gen.inherits("interrupted-error"))
-            throw Rcpp::internal::InterruptedException();
-        if (Rcpp::internal::isLongjumpSentinel(rcpp_result_gen))
-            throw Rcpp::LongjumpException(rcpp_result_gen);
-        if (rcpp_result_gen.inherits("try-error"))
-            throw Rcpp::exception(Rcpp::as<std::string>(rcpp_result_gen).c_str());
-        return Rcpp::as<IntegerVector >(rcpp_result_gen);
-    }
-
     inline List get_A_inputs(CharacterVector k_str, double beta, Nullable<double> Nmax_ = R_NilValue) {
         typedef SEXP(*Ptr_get_A_inputs)(SEXP,SEXP,SEXP);
         static Ptr_get_A_inputs p_get_A_inputs = NULL;

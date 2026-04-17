@@ -6,8 +6,14 @@
 namespace {
 
 double log_sum_exp_cpp(const std::vector<double>& values) {
+  if (values.empty()) {
+    Rcpp::stop("log_sum_exp_cpp requires at least one finite value.");
+  }
   double max_val = values[0];
   for (double value : values) {
+    if (!R_finite(value)) {
+      Rcpp::stop("log_sum_exp_cpp requires only finite values.");
+    }
     if (value > max_val) {
       max_val = value;
     }
@@ -35,12 +41,36 @@ Rcpp::NumericMatrix alfak_project_forward_log_cpp(Rcpp::NumericVector x0,
                                                   Rcpp::NumericVector timepoints) {
   const int K = x0.size();
   const int T = timepoints.size();
+  if (K == 0) {
+    Rcpp::stop("`x0` must contain at least one entry.");
+  }
+  if (f.size() != K) {
+    Rcpp::stop("`x0` and `f` must have the same length.");
+  }
+  double x0_sum = 0.0;
+  for (int i = 0; i < K; ++i) {
+    if (!R_finite(x0[i]) || x0[i] < 0.0) {
+      Rcpp::stop("`x0` must contain only finite non-negative values.");
+    }
+    if (!R_finite(f[i])) {
+      Rcpp::stop("`f` must contain only finite values.");
+    }
+    x0_sum += x0[i];
+  }
+  if (!(x0_sum > 0.0) || !R_finite(x0_sum)) {
+    Rcpp::stop("`x0` must sum to a positive finite value.");
+  }
+  for (int t = 0; t < T; ++t) {
+    if (!R_finite(timepoints[t])) {
+      Rcpp::stop("`timepoints` must contain only finite values.");
+    }
+  }
   Rcpp::NumericMatrix out(K, T);
   std::vector<double> log_x0(K);
   std::vector<double> lv(K);
 
   for (int i = 0; i < K; ++i) {
-    log_x0[i] = std::log(x0[i]);
+    log_x0[i] = std::log(x0[i] / x0_sum);
   }
 
   for (int t = 0; t < T; ++t) {
@@ -62,6 +92,15 @@ double alfak_neg_log_lik_cpp(Rcpp::NumericVector param,
                              Rcpp::NumericVector timepoints) {
   const int K = counts.nrow();
   const int T = counts.ncol();
+  if (K <= 0) {
+    Rcpp::stop("`counts` must have at least one row.");
+  }
+  if (T != timepoints.size()) {
+    Rcpp::stop("`counts` must have ncol equal to length(timepoints).");
+  }
+  if (param.size() != (2 * K - 1)) {
+    Rcpp::stop("`param` must have length 2*K - 1.");
+  }
   std::vector<double> f_full(K, 0.0);
   std::vector<double> log_x0(K);
   std::vector<double> lv(K);
@@ -69,6 +108,9 @@ double alfak_neg_log_lik_cpp(Rcpp::NumericVector param,
   if (K > 1) {
     double f_sum = 0.0;
     for (int i = 0; i < K - 1; ++i) {
+      if (!R_finite(param[i])) {
+        Rcpp::stop("`param` must contain only finite values.");
+      }
       f_full[i] = param[i];
       f_sum += param[i];
     }
@@ -76,7 +118,20 @@ double alfak_neg_log_lik_cpp(Rcpp::NumericVector param,
   }
 
   for (int i = 0; i < K; ++i) {
+    if (!R_finite(param[K - 1 + i])) {
+      Rcpp::stop("`param` must contain only finite values.");
+    }
     log_x0[i] = param[K - 1 + i];
+  }
+  for (int t = 0; t < T; ++t) {
+    if (!R_finite(timepoints[t])) {
+      Rcpp::stop("`timepoints` must contain only finite values.");
+    }
+    for (int i = 0; i < K; ++i) {
+      if (!R_finite(counts(i, t)) || counts(i, t) < 0.0) {
+        Rcpp::stop("`counts` must contain only finite non-negative values.");
+      }
+    }
   }
 
   double nll = 0.0;
@@ -114,12 +169,36 @@ double alfak_neighbor_objective_cpp(double fc_param,
   if (n_parents == 0) {
     return 1e9;
   }
+  if (!R_finite(fc_param) || !R_finite(tol) || tol <= 0.0) {
+    Rcpp::stop("`fc_param` must be finite and `tol` must be a positive finite value.");
+  }
+  if (pij_values.size() != n_parents || parent_birth_times.size() != n_parents ||
+      parent_xfit.nrow() != n_parents) {
+    Rcpp::stop("Parent inputs must have matching lengths/rows.");
+  }
+  if (parent_xfit.ncol() != n_time) {
+    Rcpp::stop("`parent_xfit` must have ncol equal to length(timepoints).");
+  }
+  if (child_obs.size() != n_time || ntot.size() != n_time) {
+    Rcpp::stop("`child_obs`, `ntot`, and `timepoints` must have matching lengths.");
+  }
+  if (do_prior && (!R_finite(prior_sd) || prior_sd <= 0.0 || !R_finite(prior_mean) || !R_finite(parent_fitness_mean))) {
+    Rcpp::stop("When `do_prior` is TRUE, prior parameters and parent fitness mean must be finite and `prior_sd` must be positive.");
+  }
 
   double loglik = 0.0;
   for (int t = 0; t < n_time; ++t) {
+    if (!R_finite(timepoints[t]) || !R_finite(child_obs[t]) || child_obs[t] < 0.0 ||
+        !R_finite(ntot[t]) || ntot[t] < 0.0) {
+      Rcpp::stop("Timepoints, observed counts, and totals must be finite and non-negative.");
+    }
     double xc_est = 0.0;
     for (int p = 0; p < n_parents; ++p) {
-      double tt = timepoints[t] - parent_birth_times[p];
+      if (!R_finite(parent_fitness[p]) || !R_finite(pij_values[p]) || pij_values[p] < 0.0 ||
+          !R_finite(parent_birth_times[p]) || !R_finite(parent_xfit(p, t))) {
+        Rcpp::stop("Parent fitness, transition probabilities, birth times, and parent_xfit must be finite; pij values must be non-negative.");
+      }
+      double tt = std::max(0.0, timepoints[t] - parent_birth_times[p]);
       xc_est += fexp_stable_cpp(fc_param, parent_fitness[p], pij_values[p], tt, tol) * parent_xfit(p, t);
     }
 
@@ -152,6 +231,12 @@ Rcpp::List alfak_qr_accum_cpp(Rcpp::NumericMatrix x_trim,
                               Rcpp::NumericMatrix dx_dt) {
   const int K = x_trim.nrow();
   const int T = x_trim.ncol();
+  if (K <= 0 || T < 0) {
+    Rcpp::stop("`x_trim` must have positive dimensions.");
+  }
+  if (dx_dt.nrow() != K || dx_dt.ncol() != T) {
+    Rcpp::stop("`x_trim` and `dx_dt` must have identical dimensions.");
+  }
   Rcpp::NumericMatrix Q_accum(K, K);
   Rcpp::NumericVector r_accum(K);
   std::vector<double> xt(K);
@@ -163,6 +248,9 @@ Rcpp::List alfak_qr_accum_cpp(Rcpp::NumericMatrix x_trim,
     double xt_dx_dot = 0.0;
 
     for (int i = 0; i < K; ++i) {
+      if (!R_finite(x_trim(i, t)) || !R_finite(dx_dt(i, t))) {
+        Rcpp::stop("`x_trim` and `dx_dt` must contain only finite values.");
+      }
       xt[i] = x_trim(i, t);
       dx[i] = dx_dt(i, t);
       xt_sq[i] = xt[i] * xt[i];
