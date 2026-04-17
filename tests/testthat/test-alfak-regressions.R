@@ -5,6 +5,66 @@ make_counts <- function(values, rownames_vec, colnames_vec) {
   x
 }
 
+reference_project_forward_log <- function(x0, f, timepoints) {
+  out <- matrix(NA_real_, nrow = length(x0), ncol = length(timepoints))
+  log_x0 <- log(x0)
+  for (i in seq_along(timepoints)) {
+    lv <- log_x0 + f * timepoints[i]
+    denom <- alfakR:::logSumExp(lv)
+    out[, i] <- exp(lv - denom)
+  }
+  out
+}
+
+reference_neg_log_lik <- function(param, counts, timepoints) {
+  K <- nrow(counts)
+  free_idx <- if (K > 1) seq_len(K - 1) else integer(0)
+  f_free <- param[free_idx]
+  f_full <- c(f_free, -sum(f_free))
+  log_x0 <- param[K:(2 * K - 1)]
+  nll <- 0
+  for (i in seq_len(ncol(counts))) {
+    lv <- log_x0 + f_full * timepoints[i]
+    denom <- alfakR:::logSumExp(lv)
+    for (k in seq_len(K)) {
+      if (counts[k, i] > 0) {
+        nll <- nll - counts[k, i] * (lv[k] - denom)
+      }
+    }
+  }
+  nll
+}
+
+reference_neighbor_objective <- function(fc_param, parent_fitness, pij_values,
+                                         parent_birth_times, timepoints, parent_xfit,
+                                         child_obs, ntot, parent_fitness_mean,
+                                         prior_mean, prior_sd, do_prior, tol) {
+  xc_est <- colSums(do.call(rbind, lapply(seq_along(parent_fitness), function(i) {
+    tt <- timepoints - parent_birth_times[i]
+    alfakR:::fExp_stable(fc_param, parent_fitness[i], pij_values[i], tt, tol = tol) * parent_xfit[i, ]
+  })))
+  xc_est <- pmax(0, pmin(1, xc_est))
+  res <- stats::dbinom(child_obs, ntot, prob = xc_est, log = TRUE)
+  if (do_prior && is.finite(parent_fitness_mean)) {
+    res <- c(res, stats::dnorm(fc_param - parent_fitness_mean, mean = prior_mean, sd = prior_sd, log = TRUE))
+  }
+  res[!is.finite(res)] <- -(10^9)
+  -sum(res)
+}
+
+reference_qr_accum <- function(x_trim, dx_dt) {
+  K <- nrow(x_trim)
+  Q_accum <- matrix(0, nrow = K, ncol = K)
+  r_accum <- numeric(K)
+  for (t_idx in seq_len(ncol(x_trim))) {
+    xt <- x_trim[, t_idx]
+    M_t <- diag(as.numeric(xt), nrow = length(xt), ncol = length(xt)) - outer(xt, xt)
+    Q_accum <- Q_accum + M_t %*% M_t
+    r_accum <- as.numeric(r_accum + M_t %*% dx_dt[, t_idx])
+  }
+  list(Q_accum = Q_accum, r_accum = r_accum)
+}
+
 test_that("minobs includes karyotypes exactly at the threshold", {
   yi <- list(
     x = make_counts(
@@ -163,6 +223,74 @@ test_that("fExp_stable stays finite and matches the analytic limit near fc == fp
   expect_true(all(is.finite(near)))
   expect_equal(exact, limit_val, tolerance = 1e-12)
   expect_equal(near, limit_val, tolerance = 1e-12)
+})
+
+test_that("C++ numerical kernels match the previous R reference calculations", {
+  x0 <- c(0.3, 0.7)
+  f <- c(0.1, -0.1)
+  timepoints <- c(0, 1.5, 4)
+  project_ref <- reference_project_forward_log(x0, f, timepoints)
+  project_cpp <- alfak_project_forward_log_cpp(x0, f, timepoints)
+  expect_equal(project_cpp, project_ref, tolerance = 1e-12)
+
+  counts <- matrix(c(10, 5, 7,
+                     4, 11, 9), nrow = 2, byrow = TRUE)
+  param <- c(0.2, log(0.4), log(0.6))
+  expect_equal(
+    alfak_neg_log_lik_cpp(param, counts, timepoints),
+    reference_neg_log_lik(param, counts, timepoints),
+    tolerance = 1e-12
+  )
+
+  parent_fitness <- c(0.15, 0.05)
+  pij_values <- c(0.2, 0.1)
+  parent_birth_times <- c(-1, 0.5)
+  parent_xfit <- matrix(c(0.4, 0.35, 0.3,
+                          0.2, 0.25, 0.3), nrow = 2, byrow = TRUE)
+  child_obs <- c(0, 2, 3)
+  ntot <- c(10, 12, 14)
+  expect_equal(
+    alfak_neighbor_objective_cpp(
+      fc_param = 0.11,
+      parent_fitness = parent_fitness,
+      pij_values = pij_values,
+      parent_birth_times = parent_birth_times,
+      timepoints = timepoints,
+      parent_xfit = parent_xfit,
+      child_obs = child_obs,
+      ntot = ntot,
+      parent_fitness_mean = 0.12,
+      prior_mean = 0.01,
+      prior_sd = 0.2,
+      do_prior = TRUE,
+      tol = alfakR:::ALFAK_FEXP_DELTA_TOL
+    ),
+    reference_neighbor_objective(
+      fc_param = 0.11,
+      parent_fitness = parent_fitness,
+      pij_values = pij_values,
+      parent_birth_times = parent_birth_times,
+      timepoints = timepoints,
+      parent_xfit = parent_xfit,
+      child_obs = child_obs,
+      ntot = ntot,
+      parent_fitness_mean = 0.12,
+      prior_mean = 0.01,
+      prior_sd = 0.2,
+      do_prior = TRUE,
+      tol = alfakR:::ALFAK_FEXP_DELTA_TOL
+    ),
+    tolerance = 1e-12
+  )
+
+  x_trim <- matrix(c(0.3, 0.4,
+                     0.7, 0.6), nrow = 2, byrow = TRUE)
+  dx_dt <- matrix(c(0.1, -0.05,
+                    -0.1, 0.05), nrow = 2, byrow = TRUE)
+  qr_ref <- reference_qr_accum(x_trim, dx_dt)
+  qr_cpp <- alfak_qr_accum_cpp(x_trim, dx_dt)
+  expect_equal(qr_cpp$Q_accum, qr_ref$Q_accum, tolerance = 1e-12)
+  expect_equal(qr_cpp$r_accum, qr_ref$r_accum, tolerance = 1e-12)
 })
 
 test_that("passage_times defines one validated internal time axis everywhere", {

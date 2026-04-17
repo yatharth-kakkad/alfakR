@@ -633,23 +633,7 @@ gen_nn_info <- function(fq, pm = 0.00005) {
 #' @keywords internal
 #' @noRd
 neg_log_lik <- function(param, counts, timepoints) {
-  K <- nrow(counts)
-  Tt <- ncol(counts)
-  free_idx <- if (K > 1) seq_len(K - 1) else integer(0)
-  f_free <- param[free_idx]
-  f_full <- c(f_free, -sum(f_free))
-  log_x0 <- param[K:(2 * K - 1)]
-  nll <- 0
-  for (i in seq_len(Tt)) {
-    lv <- log_x0 + f_full * timepoints[i]
-    denom <- logSumExp(lv)
-    for (k in seq_len(K)) {
-      if (counts[k, i] > 0) {
-        nll <- nll - counts[k, i] * (lv[k] - denom)
-      }
-    }
-  }
-  nll
+  alfak_neg_log_lik_cpp(param, counts, timepoints)
 }
 
 #' Jointly optimize fitness and initial frequencies
@@ -680,15 +664,7 @@ joint_optimize <- function(counts, timepoints, f_init, x0_init) {
 #' @keywords internal
 #' @noRd
 project_forward_log <- function(x0, f, timepoints) {
-  K <- length(x0)
-  out <- matrix(NA, nrow = K, ncol = length(timepoints))
-  log_x0 <- log(x0) # Original did not have epsilon here
-  for (i in seq_along(timepoints)) {
-    lv <- log_x0 + f * timepoints[i]
-    denom <- logSumExp(lv)
-    out[, i] <- exp(lv - denom)
-  }
-  out
+  alfak_project_forward_log_cpp(x0, f, timepoints)
 }
 
 #' Optimize initial frequencies given observed data and fitness values
@@ -780,15 +756,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     dx_dt <- compute_dx_dt(x, current_timepoints)
     x_trim <- x[, -1, drop = FALSE] # Use x(t+1) for M_t, as per original logic
 
-    Q_accum <- matrix(0, nrow = current_num_species, ncol = current_num_species)
-    r_accum <- rep(0, current_num_species) # Original was rep(0, num_species)
-
-    for (t_idx in 1:(current_num_timepoints - 1)) { # Renamed t to t_idx
-      xt <- x_trim[, t_idx]
-      M_t <- diag(as.numeric(xt), nrow = length(xt), ncol = length(xt)) - outer(xt, xt)
-      Q_accum <- Q_accum + M_t %*% M_t
-      r_accum <- r_accum + M_t %*% dx_dt[, t_idx]
-    }
+    qr_terms <- alfak_qr_accum_cpp(x_trim, dx_dt)
+    Q_accum <- qr_terms$Q_accum
+    r_accum <- qr_terms$r_accum
     Dmat_boot <- 2 * Q_accum + diag(current_epsilon, current_num_species) # Original epsilon
     dvec_boot <- 2 * r_accum
     A_mat <- matrix(1, nrow = current_num_species, ncol = 1) # Renamed A
@@ -845,34 +815,38 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     xfit <- project_forward_log(x0par, fpar, current_timepoints)
     rownames(xfit) <- current_fq
     ntot <- colSums(boot_data) # Total counts from bootstrapped data
-
-    opt_fc <- function(fc_param, nni_param, prior_mean_param = NULL, prior_sd_param = NULL, do_prior_param = FALSE) { #Renamed args
+    ntot_rounded <- round(ntot)
+    build_opt_fc <- function(nni_param, prior_mean_param = NaN, prior_sd_param = NaN, do_prior_param = FALSE) {
       if (length(nni_param$nj) == 0) {
-        return(10^9)
+        return(function(fc_param) 10^9)
       }
       child <- nni_param$ni
       parent_fitness_mean <- weighted_parent_fitness(nni_param, fpar)
-      xc_est <- colSums(do.call(rbind, lapply(1:length(nni_param$nj), function(i_loop) { #Renamed i
-        parent_karyo <- nni_param$nj[i_loop] #Renamed par
-        tt_val <- current_timepoints - birth_times_est[parent_karyo] #Renamed tt
-        fExp_stable(fc_param, fpar[parent_karyo], nni_param$pij[i_loop], tt_val) * xfit[parent_karyo, ]
-      })))
-      xc_est <- pmax(0, pmin(1, xc_est)) # Ensure probabilities are in [0,1]
-      xc_obs <- rep(0, length(current_timepoints))
-      if (child %in% rownames(boot_data)) # Check against full bootstrapped data
-        xc_obs <- boot_data[nni_param$ni, ]
-
-      res <- stats::dbinom(xc_obs, round(ntot), prob = xc_est, log = TRUE) # round(ntot) if ntot can be non-integer
-      if (do_prior_param && is.finite(parent_fitness_mean)) {
-        # The neighbour prior is always defined on child fitness minus a parent-fitness baseline.
-        # For multi-parent children we use a pij-weighted parent mean when the weights are valid.
-        res <- c(res, stats::dnorm(fc_param - parent_fitness_mean,
-                                   mean = prior_mean_param,
-                                   sd = prior_sd_param,
-                                   log = TRUE))
+      parent_fitness <- unname(fpar[nni_param$nj])
+      parent_birth_times <- unname(birth_times_est[nni_param$nj])
+      parent_xfit <- xfit[nni_param$nj, , drop = FALSE]
+      child_obs <- rep(0, length(current_timepoints))
+      if (child %in% rownames(boot_data)) {
+        child_obs <- as.numeric(boot_data[child, ])
       }
-      res[!is.finite(res)] <- -(10^9) # Penalize non-finite values
-      -sum(res)
+
+      function(fc_param) {
+        alfak_neighbor_objective_cpp(
+          fc_param = fc_param,
+          parent_fitness = parent_fitness,
+          pij_values = nni_param$pij,
+          parent_birth_times = parent_birth_times,
+          timepoints = current_timepoints,
+          parent_xfit = parent_xfit,
+          child_obs = child_obs,
+          ntot = ntot_rounded,
+          parent_fitness_mean = parent_fitness_mean,
+          prior_mean = prior_mean_param,
+          prior_sd = prior_sd_param,
+          do_prior = do_prior_param,
+          tol = ALFAK_FEXP_DELTA_TOL
+        )
+      }
     }
     search_interval <- range(fpar, na.rm=TRUE) # Added na.rm=TRUE
     interval_range <- diff(search_interval)
@@ -903,9 +877,8 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       sapply_names <- names(current_nn_info)[nn_present]
       if(length(sapply_names) > 0) { # Ensure there are names to iterate over
         for (child_name in sapply_names) {
-          res <- run_optimise_checked(opt_fc, interval = search_interval,
-                                      nni_param = current_nn_info[[child_name]],
-                                      do_prior_param = FALSE,
+          objective_fn <- build_opt_fc(current_nn_info[[child_name]], do_prior_param = FALSE)
+          res <- run_optimise_checked(objective_fn, interval = search_interval,
                                       context = sprintf("optimise nearest-neighbour fitness for observed child %s", child_name))
           if (!is.null(res)) {
             fc[child_name] <- res$minimum
@@ -940,11 +913,11 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
         for (child_name in sapply_names_not_present) {
-          res <- run_optimise_checked(opt_fc, interval = search_interval,
-                                      nni_param = current_nn_info[[child_name]],
-                                      prior_mean_param = mean_fc_prior_val,
-                                      prior_sd_param = sd_fc_prior_val,
-                                      do_prior_param = TRUE,
+          objective_fn <- build_opt_fc(current_nn_info[[child_name]],
+                                       prior_mean_param = mean_fc_prior_val,
+                                       prior_sd_param = sd_fc_prior_val,
+                                       do_prior_param = TRUE)
+          res <- run_optimise_checked(objective_fn, interval = search_interval,
                                       context = sprintf("optimise nearest-neighbour fitness with prior for latent child %s", child_name))
           if (!is.null(res)) {
             fc[child_name] <- res$minimum
@@ -955,9 +928,8 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
         for (child_name in sapply_names_not_present) {
-          res <- run_optimise_checked(opt_fc, interval = search_interval,
-                                      nni_param = current_nn_info[[child_name]],
-                                      do_prior_param = FALSE,
+          objective_fn <- build_opt_fc(current_nn_info[[child_name]], do_prior_param = FALSE)
+          res <- run_optimise_checked(objective_fn, interval = search_interval,
                                       context = sprintf("optimise nearest-neighbour fitness without prior for latent child %s", child_name))
           if (!is.null(res)) {
             fc[child_name] <- res$minimum

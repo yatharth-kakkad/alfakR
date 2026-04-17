@@ -34,6 +34,67 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// alfak_project_forward_log_cpp
+Rcpp::NumericMatrix alfak_project_forward_log_cpp(Rcpp::NumericVector x0, Rcpp::NumericVector f, Rcpp::NumericVector timepoints);
+RcppExport SEXP _alfakR_alfak_project_forward_log_cpp(SEXP x0SEXP, SEXP fSEXP, SEXP timepointsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x0(x0SEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type f(fSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type timepoints(timepointsSEXP);
+    rcpp_result_gen = Rcpp::wrap(alfak_project_forward_log_cpp(x0, f, timepoints));
+    return rcpp_result_gen;
+END_RCPP
+}
+// alfak_neg_log_lik_cpp
+double alfak_neg_log_lik_cpp(Rcpp::NumericVector param, Rcpp::NumericMatrix counts, Rcpp::NumericVector timepoints);
+RcppExport SEXP _alfakR_alfak_neg_log_lik_cpp(SEXP paramSEXP, SEXP countsSEXP, SEXP timepointsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type param(paramSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type timepoints(timepointsSEXP);
+    rcpp_result_gen = Rcpp::wrap(alfak_neg_log_lik_cpp(param, counts, timepoints));
+    return rcpp_result_gen;
+END_RCPP
+}
+// alfak_neighbor_objective_cpp
+double alfak_neighbor_objective_cpp(double fc_param, Rcpp::NumericVector parent_fitness, Rcpp::NumericVector pij_values, Rcpp::NumericVector parent_birth_times, Rcpp::NumericVector timepoints, Rcpp::NumericMatrix parent_xfit, Rcpp::NumericVector child_obs, Rcpp::NumericVector ntot, double parent_fitness_mean, double prior_mean, double prior_sd, bool do_prior, double tol);
+RcppExport SEXP _alfakR_alfak_neighbor_objective_cpp(SEXP fc_paramSEXP, SEXP parent_fitnessSEXP, SEXP pij_valuesSEXP, SEXP parent_birth_timesSEXP, SEXP timepointsSEXP, SEXP parent_xfitSEXP, SEXP child_obsSEXP, SEXP ntotSEXP, SEXP parent_fitness_meanSEXP, SEXP prior_meanSEXP, SEXP prior_sdSEXP, SEXP do_priorSEXP, SEXP tolSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type fc_param(fc_paramSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type parent_fitness(parent_fitnessSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type pij_values(pij_valuesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type parent_birth_times(parent_birth_timesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type timepoints(timepointsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type parent_xfit(parent_xfitSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type child_obs(child_obsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type ntot(ntotSEXP);
+    Rcpp::traits::input_parameter< double >::type parent_fitness_mean(parent_fitness_meanSEXP);
+    Rcpp::traits::input_parameter< double >::type prior_mean(prior_meanSEXP);
+    Rcpp::traits::input_parameter< double >::type prior_sd(prior_sdSEXP);
+    Rcpp::traits::input_parameter< bool >::type do_prior(do_priorSEXP);
+    Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
+    rcpp_result_gen = Rcpp::wrap(alfak_neighbor_objective_cpp(fc_param, parent_fitness, pij_values, parent_birth_times, timepoints, parent_xfit, child_obs, ntot, parent_fitness_mean, prior_mean, prior_sd, do_prior, tol));
+    return rcpp_result_gen;
+END_RCPP
+}
+// alfak_qr_accum_cpp
+Rcpp::List alfak_qr_accum_cpp(Rcpp::NumericMatrix x_trim, Rcpp::NumericMatrix dx_dt);
+RcppExport SEXP _alfakR_alfak_qr_accum_cpp(SEXP x_trimSEXP, SEXP dx_dtSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type x_trim(x_trimSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type dx_dt(dx_dtSEXP);
+    rcpp_result_gen = Rcpp::wrap(alfak_qr_accum_cpp(x_trim, dx_dt));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pij
 double pij(int i, int j, double beta);
 static SEXP _alfakR_pij_try(SEXP iSEXP, SEXP jSEXP, SEXP betaSEXP) {
@@ -239,6 +300,10 @@ RcppExport SEXP _alfakR_RcppExport_registerCCallable() {
 
 static const R_CallMethodDef CallEntries[] = {
     {"_alfakR_run_karyotype_abm", (DL_FUNC) &_alfakR_run_karyotype_abm, 11},
+    {"_alfakR_alfak_project_forward_log_cpp", (DL_FUNC) &_alfakR_alfak_project_forward_log_cpp, 3},
+    {"_alfakR_alfak_neg_log_lik_cpp", (DL_FUNC) &_alfakR_alfak_neg_log_lik_cpp, 3},
+    {"_alfakR_alfak_neighbor_objective_cpp", (DL_FUNC) &_alfakR_alfak_neighbor_objective_cpp, 13},
+    {"_alfakR_alfak_qr_accum_cpp", (DL_FUNC) &_alfakR_alfak_qr_accum_cpp, 2},
     {"_alfakR_pij", (DL_FUNC) &_alfakR_pij, 3},
     {"_alfakR_s2v", (DL_FUNC) &_alfakR_s2v, 1},
     {"_alfakR_get_A_inputs", (DL_FUNC) &_alfakR_get_A_inputs, 3},

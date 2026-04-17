@@ -5,6 +5,22 @@ run_karyotype_abm <- function(initial_population_r, fitness_map_r, p_missegregat
     .Call(`_alfakR_run_karyotype_abm`, initial_population_r, fitness_map_r, p_missegregation, dt, n_steps, max_population_size, culling_survival_fraction, record_interval, seed, grf_centroids, grf_lambda)
 }
 
+alfak_project_forward_log_cpp <- function(x0, f, timepoints) {
+    .Call(`_alfakR_alfak_project_forward_log_cpp`, x0, f, timepoints)
+}
+
+alfak_neg_log_lik_cpp <- function(param, counts, timepoints) {
+    .Call(`_alfakR_alfak_neg_log_lik_cpp`, param, counts, timepoints)
+}
+
+alfak_neighbor_objective_cpp <- function(fc_param, parent_fitness, pij_values, parent_birth_times, timepoints, parent_xfit, child_obs, ntot, parent_fitness_mean, prior_mean, prior_sd, do_prior, tol) {
+    .Call(`_alfakR_alfak_neighbor_objective_cpp`, fc_param, parent_fitness, pij_values, parent_birth_times, timepoints, parent_xfit, child_obs, ntot, parent_fitness_mean, prior_mean, prior_sd, do_prior, tol)
+}
+
+alfak_qr_accum_cpp <- function(x_trim, dx_dt) {
+    .Call(`_alfakR_alfak_qr_accum_cpp`, x_trim, dx_dt)
+}
+
 #' Compute the probability pij that a parent with i chromosomes produces
 #' a daughter with j chromosomes under mis-segregation rate beta.
 #' @param i Integer number of chromosomes in the parent cell.
