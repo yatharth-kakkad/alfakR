@@ -65,6 +65,42 @@ test_that("matrix-like count inputs are accepted and coerced at entry", {
   expect_setequal(colnames(res_sparse$final_fitness), c("2.2.2", "2.2.1"))
 })
 
+test_that("count-matrix validation rejects invalid values and rounds non-integers once", {
+  x_inf <- make_counts(
+    c(10, Inf,
+      15, 15),
+    rownames_vec = c("2.2.2", "2.2.1"),
+    colnames_vec = c("0", "1")
+  )
+  expect_error(
+    alfakR:::coerce_count_matrix(x_inf),
+    "finite count values"
+  )
+
+  x_neg <- make_counts(
+    c(10, -1,
+      15, 15),
+    rownames_vec = c("2.2.2", "2.2.1"),
+    colnames_vec = c("0", "1")
+  )
+  expect_error(
+    alfakR:::coerce_count_matrix(x_neg),
+    "non-negative count values"
+  )
+
+  x_non_integer <- data.frame(
+    "0" = c(10.2, 15.7),
+    "1" = c(9.8, 14.3),
+    row.names = c("2.2.2", "2.2.1"),
+    check.names = FALSE
+  )
+  expect_warning(
+    rounded <- alfakR:::coerce_count_matrix(x_non_integer),
+    "rounding to the nearest integer once at entry"
+  )
+  expect_equal(rounded, round(as.matrix(x_non_integer)))
+})
+
 test_that("correct_efflux stops before bootstrap when viability is non-positive", {
   yi <- list(
     x = make_counts(
@@ -212,6 +248,67 @@ test_that("resolve_time_axis rejects non-increasing supplied passage_times", {
   )
 })
 
+test_that("birth-time fallback keeps neighbour estimation finite when roots are all missing", {
+  yi <- list(
+    x = make_counts(
+      c(10, 12, 11),
+      rownames_vec = "2.2.2",
+      colnames_vec = c("0", "1", "2")
+    ),
+    dt = 1
+  )
+  seen <- new.env(parent = emptyenv())
+
+  expect_warning(
+    res <- testthat::with_mocked_bindings(
+      {
+        alfakR:::solve_fitness_bootstrap(
+          yi,
+          minobs = 1,
+          nboot = 1,
+          n0 = 1e4,
+          nb = 1e6,
+          pm = 1e-4
+        )
+      },
+      compute_dx_dt = function(x, timepoints) {
+        matrix(0, nrow = nrow(x), ncol = ncol(x) - 1)
+      },
+      optimize_initial_frequencies = function(x_obs, f, timepoints) {
+        1
+      },
+      joint_optimize = function(counts, timepoints, f_init, x0_init) {
+        list(f = 0, x0 = 1)
+      },
+      project_forward_log = function(x0, f, timepoints) {
+        matrix(1, nrow = 1, ncol = length(timepoints),
+               dimnames = list("2.2.2", NULL))
+      },
+      find_birth_times = function(opt_res, time_range, minF) {
+        rep(NA_real_, length(opt_res$f))
+      },
+      run_solve_qp_checked = function(Dmat, dvec, Amat, bvec, meq, context) {
+        list(solution = 0)
+      },
+      gen_nn_info = function(fq, pm) {
+        nn <- list(list(ni = "2.2.3", nj = "2.2.2", pij = 0.1))
+        names(nn) <- "2.2.3"
+        nn
+      },
+      run_optimise_checked = function(f, interval, ..., context) {
+        objective <- f(mean(interval), ...)
+        seen$objective <- objective
+        list(minimum = mean(interval), objective = objective)
+      },
+      .package = "alfakR"
+    ),
+    "finite fallback birth times"
+  )
+
+  expect_true(is.finite(seen$objective))
+  expect_true(all(is.finite(res$nn_fitness)))
+})
+
 test_that("xval samples one real bootstrap replicate for all folds", {
   fq_boot <- list(
     final_fitness = matrix(
@@ -250,6 +347,143 @@ test_that("xval samples one real bootstrap replicate for all folds", {
     },
     .package = "fields"
   )
+})
+
+test_that("fitKrig returns structured NA bootstrap outputs when a bootstrap fit is not trainable", {
+  fq_boot <- list(
+    final_fitness = matrix(1, nrow = 3, ncol = 1, dimnames = list(NULL, "2.2.2")),
+    nn_fitness = matrix(numeric(0), nrow = 3, ncol = 0)
+  )
+
+  res <- suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 2))
+
+  expect_identical(dim(res$posterior_samples), c(1L, 2L))
+  expect_true(all(is.na(res$posterior_samples)))
+  expect_length(res$boot_results, 2)
+  expect_true(all(vapply(res$boot_results, is.list, logical(1))))
+  expect_true(all(vapply(res$fit_boot_list, is.null, logical(1))))
+  expect_true(all(vapply(res$boot_results, function(x) all(is.na(x$preds)), logical(1))))
+})
+
+test_that("nn_prior = 'none' disables latent-neighbour prior contribution", {
+  yi <- list(
+    x = make_counts(
+      c(10, 11,
+        5, 4),
+      rownames_vec = c("2.2.2", "2.2.3"),
+      colnames_vec = c("0", "1")
+    ),
+    dt = 1
+  )
+  seen <- new.env(parent = emptyenv())
+
+  testthat::with_mocked_bindings(
+    {
+      alfakR:::solve_fitness_bootstrap(
+        yi,
+        minobs = 20,
+        nboot = 1,
+        n0 = 1e4,
+        nb = 1e6,
+        pm = 1e-4,
+        nn_prior = "none"
+      )
+    },
+    compute_dx_dt = function(x, timepoints) {
+      matrix(0, nrow = nrow(x), ncol = ncol(x) - 1)
+    },
+    optimize_initial_frequencies = function(x_obs, f, timepoints) {
+      1
+    },
+    joint_optimize = function(counts, timepoints, f_init, x0_init) {
+      list(f = 0, x0 = 1)
+    },
+    project_forward_log = function(x0, f, timepoints) {
+      matrix(1, nrow = 1, ncol = length(timepoints),
+             dimnames = list("2.2.2", NULL))
+    },
+    find_birth_times = function(opt_res, time_range, minF) {
+      0
+    },
+    run_solve_qp_checked = function(Dmat, dvec, Amat, bvec, meq, context) {
+      list(solution = 0)
+    },
+    gen_nn_info = function(fq, pm) {
+      nn <- list(
+        list(ni = "2.2.3", nj = "2.2.2", pij = 0.2),
+        list(ni = "2.2.1", nj = "2.2.2", pij = 0.2)
+      )
+      names(nn) <- c("2.2.3", "2.2.1")
+      nn
+    },
+    run_optimise_checked = function(f, interval, ..., context) {
+      dots <- list(...)
+      if (grepl("latent child 2.2.1", context, fixed = TRUE)) {
+        seen$latent_do_prior <- isTRUE(dots$do_prior_param)
+      }
+      list(minimum = mean(interval), objective = 0)
+    },
+    .package = "alfakR"
+  )
+
+  expect_false(isTRUE(seen$latent_do_prior))
+})
+
+test_that("find_steady_state matches long-time row-vector ODE dynamics", {
+  skip_if_not_installed("deSolve")
+  skip_if_not_installed("Matrix")
+
+  lscape <- data.frame(
+    k = c("2.2", "3.1"),
+    mean = c(1, 1),
+    stringsAsFactors = FALSE
+  )
+  A <- Matrix::Matrix(
+    matrix(c(0.1, 0.9,
+             0.8, 0.2), nrow = 2, byrow = TRUE),
+    sparse = TRUE,
+    dimnames = list(lscape$k, lscape$k)
+  )
+  ode_out <- deSolve::ode(
+    y = c(0.8, 0.2),
+    times = seq(0, 100, by = 0.1),
+    func = alfakR:::chrmod_rel,
+    parms = list(A = A)
+  )
+  terminal <- as.numeric(ode_out[nrow(ode_out), -1])
+  terminal <- terminal / sum(terminal)
+
+  ss <- testthat::with_mocked_bindings(
+    {
+      alfakR::find_steady_state(lscape, p = 0.01)
+    },
+    build_W_rcpp = function(karyotype_strings, p, Nmax = Inf) {
+      A
+    },
+    .package = "alfakR"
+  )
+
+  expect_equal(unname(ss), terminal, tolerance = 1e-4)
+})
+
+test_that("ABM parent accounting consumes each dividing parent exactly once", {
+  res <- alfakR:::run_karyotype_abm(
+    initial_population_r = stats::setNames(list(10), "1"),
+    fitness_map_r = stats::setNames(list(1, 1), c("1", "2")),
+    p_missegregation = 1,
+    dt = 1,
+    n_steps = 1L,
+    max_population_size = 0,
+    culling_survival_fraction = 0.1,
+    record_interval = 1L,
+    seed = 123L,
+    grf_centroids = matrix(0, 0, 0),
+    grf_lambda = NA_real_
+  )
+
+  expect_true("1" %in% names(res))
+  step1_counts <- res[["1"]]
+  expect_equal(sum(as.numeric(step1_counts)), 10)
 })
 
 test_that("landscape_data_output controls whether landscape_data.Rds is written", {
@@ -382,6 +616,65 @@ test_that("alfak saves xval.Rds as a scalar R2R for downstream compatibility", {
     solve_fitness_bootstrap = function(...) fq_boot_stub,
     fitKrig = function(...) landscape_stub,
     xval = function(...) xval_stub,
+    .package = "alfakR"
+  )
+})
+
+test_that("alfak accepts scalar NA_real_ cross-validation outputs and still writes core files", {
+  yi <- list(
+    x = make_counts(
+      c(10, 12,
+        20, 18),
+      rownames_vec = c("2.2.2", "2.2.1"),
+      colnames_vec = c("0", "1")
+    ),
+    dt = 1
+  )
+  fq_boot_stub <- list(
+    initial_fitness = matrix(0, nrow = 1, ncol = 1, dimnames = list(NULL, "2.2.2")),
+    final_fitness = matrix(0, nrow = 1, ncol = 1, dimnames = list(NULL, "2.2.2")),
+    initial_frequencies = matrix(1, nrow = 1, ncol = 1, dimnames = list(NULL, "2.2.2")),
+    final_frequencies = matrix(1, nrow = 1, ncol = 1, dimnames = list(NULL, "2.2.2")),
+    nn_fitness = matrix(numeric(0), nrow = 1, ncol = 0)
+  )
+  landscape_stub <- list(
+    summary_stats = data.frame(
+      k = "2.2.2",
+      mean = 0,
+      median = 0,
+      sd = 0,
+      fq = TRUE,
+      nn = FALSE
+    ),
+    posterior_samples = matrix(0, nrow = 1, ncol = 1),
+    krig_stable_mean = NULL,
+    krig_stable_median = NULL
+  )
+  outdir <- file.path(tempdir(), "alfak_xval_na")
+  unlink(outdir, recursive = TRUE)
+
+  testthat::with_mocked_bindings(
+    {
+      returned <- invisible(alfakR::alfak(
+        yi = yi,
+        outdir = outdir,
+        passage_times = NULL,
+        minobs = 1,
+        nboot = 1,
+        n0 = 1e4,
+        nb = 1e6,
+        pm = 1e-4
+      ))
+      saved <- readRDS(file.path(outdir, "xval.Rds"))
+      expect_true(is.numeric(returned) && length(returned) == 1 && is.na(returned))
+      expect_true(is.numeric(saved) && length(saved) == 1 && is.na(saved))
+      expect_true(file.exists(file.path(outdir, "bootstrap_res.Rds")))
+      expect_true(file.exists(file.path(outdir, "landscape.Rds")))
+      expect_true(file.exists(file.path(outdir, "landscape_posterior_samples.Rds")))
+    },
+    solve_fitness_bootstrap = function(...) fq_boot_stub,
+    fitKrig = function(...) landscape_stub,
+    xval = function(...) NA_real_,
     .package = "alfakR"
   )
 })

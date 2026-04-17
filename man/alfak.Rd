@@ -14,7 +14,10 @@ alfak(
   nb = 1e+07,
   pm = 5e-05,
   correct_efflux = FALSE,
-  landscape_data_output = FALSE
+  landscape_data_output = FALSE,
+  nn_prior = c("empirical", "none"),
+  nn_prior_sd = NULL,
+  nn_prior_sd_floor = 0.001
 )
 }
 \arguments{
@@ -63,6 +66,18 @@ rather than a chromosome-specific model.}
 \code{landscape_data.Rds} file containing the stable Kriging mean and median
 model objects. Default is \code{FALSE}, so only the documented core outputs are
 written.}
+
+\item{nn_prior}{Character; nearest-neighbour prior mode for latent children.
+\code{"empirical"} uses the current empirical child-minus-parent prior estimated
+from observed neighbours, while \code{"none"} disables that prior contribution.
+Default is \code{"empirical"}.}
+
+\item{nn_prior_sd}{Optional numeric scalar. If supplied, this overrides the
+empirically estimated prior standard deviation for latent-neighbour fitting.}
+
+\item{nn_prior_sd_floor}{Numeric scalar giving the minimum standard deviation
+used when the empirical prior variance is zero or too small. Default is
+\code{1e-3}.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.

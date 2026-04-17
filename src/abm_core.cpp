@@ -344,7 +344,6 @@ Rcpp::List run_karyotype_abm(
   
   std::poisson_distribution<long long> poisson_dist;
   std::binomial_distribution<long long> binomial_dist_ll;
-  std::binomial_distribution<int> error_dist_binomial; // Renamed error_dist
   
   for (int step = 1; step <= n_steps; ++step) {
     if (population.empty()) {
@@ -394,25 +393,8 @@ Rcpp::List run_karyotype_abm(
         continue;
       }
       
-      // Determine number of missegregations for these n_divs
-      long long n_faithful_divs = 0;
-      if (n_chrom_total_parent == 0) { // If parent has no chromosomes, all divisions are "faithful" (0 errors)
-        n_faithful_divs = n_divs;
-      } else {
-        error_dist_binomial.param(typename std::binomial_distribution<int>::param_type(n_divs, p_missegregation));
-        long long n_misseg_events_total_across_divs = error_dist_binomial(rng_engine); // Total divisions that will have >=1 error
-        n_faithful_divs = n_divs - n_misseg_events_total_across_divs;
-      }
-      
-      net_changes_this_step[parent_cn] += (n_faithful_divs - n_divs); // Faithful add 2, lose 1; unfaithful lose 1. Net for parent.
-      // Net: n_faithful_divs * 1 (parent replaced by 2 daughters, one is like parent)
-      //      + (n_divs - n_faithful_divs) * (-1) (parent lost, replaced by errant daughters)
-      // Simpler: parent_count -= n_divs; (these are "consumed")
-      //          faithful_daughters_like_parent += n_faithful_divs;
-      //          faithful_daughters_other += n_faithful_divs;
-      // Let's use the logic from your original C++ for num_missegs distribution.
-      // The logic below is what you had and re-implements the per-division error decision.
-      
+      // Each completed division consumes one parent exactly once. Daughters are the
+      // only source of gains, whether the division is faithful or missegregating.
       net_changes_this_step[parent_cn] -= n_divs; // All dividing parents are removed first
       
       for (long long div_idx = 0; div_idx < n_divs; ++div_idx) {

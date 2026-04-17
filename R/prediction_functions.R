@@ -592,21 +592,34 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
   }
   
   M_matrix <- W*r_values
+  # chrmod_rel() evolves row vectors via x %*% M_matrix, so the steady state is
+  # the dominant left eigenvector of M_matrix, equivalently the dominant right
+  # eigenvector of t(M_matrix).
+  M_eigs <- Matrix::t(M_matrix)
   
   eig_result <- NULL
   try_LR_on_LM_fail <- TRUE # Control if we try LR after LM
-  
-  eig_result <- tryCatch(RSpectra::eigs(M_matrix, k = 1, which = "LM"), error = function(e_lm) {
-    warning("RSpectra::eigs with 'LM' failed: ", e_lm$message, ". ", 
-            if(try_LR_on_LM_fail) "Trying 'LR'." else "Not trying 'LR'.", call. = FALSE)
-    if(try_LR_on_LM_fail){
-      return(tryCatch(RSpectra::eigs(M_matrix, k = 1, which = "LR"), error = function(e_lr) {
-        stop(sprintf("RSpectra::eigs also failed with 'LR': %s", e_lr$message), call. = FALSE)
-      }))
-    } else {
-      stop(sprintf("RSpectra::eigs with 'LM' failed: %s. Aborting.", e_lm$message), call. = FALSE)
-    }
-  })
+
+  if (nrow(M_eigs) < 3) {
+    dense_eigs <- eigen(as.matrix(M_eigs))
+    dominant_idx <- which.max(Re(dense_eigs$values))
+    eig_result <- list(
+      values = dense_eigs$values[dominant_idx],
+      vectors = dense_eigs$vectors[, dominant_idx, drop = FALSE]
+    )
+  } else {
+    eig_result <- tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LM"), error = function(e_lm) {
+      warning("RSpectra::eigs with 'LM' failed: ", e_lm$message, ". ", 
+              if(try_LR_on_LM_fail) "Trying 'LR'." else "Not trying 'LR'.", call. = FALSE)
+      if(try_LR_on_LM_fail){
+        return(tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LR"), error = function(e_lr) {
+          stop(sprintf("RSpectra::eigs also failed with 'LR': %s", e_lr$message), call. = FALSE)
+        }))
+      } else {
+        stop(sprintf("RSpectra::eigs with 'LM' failed: %s. Aborting.", e_lm$message), call. = FALSE)
+      }
+    })
+  }
   
   if (is.null(eig_result) || length(eig_result$vectors) == 0) { # Check vectors specifically
     stop("Eigen decomposition (RSpectra::eigs) failed to return eigenvectors.", call. = FALSE)

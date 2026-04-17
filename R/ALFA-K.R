@@ -41,6 +41,15 @@
 #'   `landscape_data.Rds` file containing the stable Kriging mean and median
 #'   model objects. Default is `FALSE`, so only the documented core outputs are
 #'   written.
+#' @param nn_prior Character; nearest-neighbour prior mode for latent children.
+#'   `"empirical"` uses the current empirical child-minus-parent prior estimated
+#'   from observed neighbours, while `"none"` disables that prior contribution.
+#'   Default is `"empirical"`.
+#' @param nn_prior_sd Optional numeric scalar. If supplied, this overrides the
+#'   empirically estimated prior standard deviation for latent-neighbour fitting.
+#' @param nn_prior_sd_floor Numeric scalar giving the minimum standard deviation
+#'   used when the empirical prior variance is zero or too small. Default is
+#'   `1e-3`.
 #'
 #' @return Returns the cross-validation R-squared value (`Rxv`) invisibly.
 #'   The function primarily saves its results to RDS files in the `outdir`:
@@ -105,7 +114,10 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
                   nb = 1e7,
                   pm = 0.00005,
                   correct_efflux=FALSE,
-                  landscape_data_output = FALSE) {
+                  landscape_data_output = FALSE,
+                  nn_prior = c("empirical", "none"),
+                  nn_prior_sd = NULL,
+                  nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
 
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
@@ -113,6 +125,8 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
   if (!is.logical(landscape_data_output) || length(landscape_data_output) != 1 || is.na(landscape_data_output)) {
     stop("`landscape_data_output` must be a single TRUE/FALSE value.")
   }
+  nn_prior <- validate_nn_prior_mode(nn_prior)
+  validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
   yi$x <- coerce_count_matrix(yi$x)
 
   get_frequent_karyotypes(yi$x, minobs)
@@ -122,7 +136,10 @@ alfak <- function(yi, outdir, passage_times, minobs = 20,
 
   fq_boot <- solve_fitness_bootstrap(yi, minobs = minobs, nboot = nboot,
                                      n0 = n0, nb = nb, pm = pm,
-                                     passage_times = passage_times,correct_efflux=correct_efflux)
+                                     passage_times = passage_times,correct_efflux=correct_efflux,
+                                     nn_prior = nn_prior,
+                                     nn_prior_sd = nn_prior_sd,
+                                     nn_prior_sd_floor = nn_prior_sd_floor)
   saveRDS(fq_boot, file = file.path(outdir, "bootstrap_res.Rds"))
 
   landscape_data <- fitKrig(fq_boot, nboot) # nboot is passed for Kriging iterations
@@ -187,8 +204,8 @@ extract_xval_r2r <- function(xval_result) {
   } else {
     r2r_val <- xval_result
   }
-  if (!is.numeric(r2r_val) || length(r2r_val) != 1 || !is.finite(r2r_val)) {
-    stop("`xval()` must return a single finite numeric R2R value or a list containing `R2R`.")
+  if (!is.numeric(r2r_val) || length(r2r_val) != 1 || is.infinite(r2r_val)) {
+    stop("`xval()` must return a single numeric R2R value, optionally `NA_real_`, or a list containing scalar `R2R`.")
   }
   as.numeric(r2r_val)
 }
@@ -196,6 +213,29 @@ extract_xval_r2r <- function(xval_result) {
 ALFAK_FEXP_DELTA_TOL <- 1e-8
 ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
 ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
+ALFAK_COUNT_INTEGER_TOL <- sqrt(.Machine$double.eps)
+
+#' Validate nearest-neighbour prior mode
+#' @keywords internal
+#' @noRd
+validate_nn_prior_mode <- function(nn_prior) {
+  match.arg(nn_prior, c("empirical", "none"))
+}
+
+#' Validate nearest-neighbour prior controls
+#' @keywords internal
+#' @noRd
+validate_nn_prior_controls <- function(nn_prior_sd = NULL, nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
+  if (!is.null(nn_prior_sd) &&
+      (!is.numeric(nn_prior_sd) || length(nn_prior_sd) != 1 || is.na(nn_prior_sd) || !is.finite(nn_prior_sd) || nn_prior_sd <= 0)) {
+    stop("`nn_prior_sd` must be NULL or a single positive finite numeric value.")
+  }
+  if (!is.numeric(nn_prior_sd_floor) || length(nn_prior_sd_floor) != 1 || is.na(nn_prior_sd_floor) ||
+      !is.finite(nn_prior_sd_floor) || nn_prior_sd_floor <= 0) {
+    stop("`nn_prior_sd_floor` must be a single positive finite numeric value.")
+  }
+  invisible(NULL)
+}
 
 #' Coerce supported count containers to a base numeric matrix
 #' @keywords internal
@@ -216,7 +256,50 @@ coerce_count_matrix <- function(x) {
   if (!is.numeric(x_mat)) {
     stop("`yi$x`/`data$x` must contain numeric karyotype counts.")
   }
+  if (any(!is.finite(x_mat))) {
+    stop("`yi$x`/`data$x` must contain only finite count values.")
+  }
+  if (any(x_mat < 0)) {
+    stop("`yi$x`/`data$x` must contain non-negative count values.")
+  }
+  non_integer <- abs(x_mat - round(x_mat)) > ALFAK_COUNT_INTEGER_TOL
+  if (any(non_integer)) {
+    warning("Non-integer values detected in `yi$x`/`data$x`; rounding to the nearest integer once at entry.")
+    x_mat <- round(x_mat)
+  }
   x_mat
+}
+
+#' Ensure birth-time estimates are finite before neighbour estimation
+#' @keywords internal
+#' @noRd
+sanitize_birth_times <- function(birth_times_est, peak_times, timepoints) {
+  mean_risetime <- mean(peak_times - birth_times_est, na.rm = TRUE)
+  fallback_used <- FALSE
+  if (!is.finite(mean_risetime)) {
+    mean_risetime <- 0
+    fallback_used <- TRUE
+  }
+
+  missing_birth <- !is.finite(birth_times_est)
+  if (any(missing_birth)) {
+    birth_times_est[missing_birth] <- peak_times[missing_birth] - mean_risetime
+    fallback_used <- TRUE
+  }
+
+  unresolved <- !is.finite(birth_times_est)
+  if (any(unresolved)) {
+    safe_fallback <- peak_times
+    safe_fallback[!is.finite(safe_fallback)] <- min(timepoints)
+    birth_times_est[unresolved] <- safe_fallback[unresolved]
+    fallback_used <- TRUE
+  }
+
+  if (fallback_used) {
+    warning("Using finite fallback birth times for nearest-neighbour estimation because root-finding did not return enough finite birth times.")
+  }
+
+  birth_times_est
 }
 
 #' Format a short karyotype preview for diagnostics
@@ -662,8 +745,13 @@ find_birth_times <- function(opt_res, time_range, minF) {
 #' @keywords internal
 #' @noRd
 solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, pm = 0.00005,
-                                    n0, nb, passage_times = NULL,correct_efflux=FALSE) {
+                                    n0, nb, passage_times = NULL,correct_efflux=FALSE,
+                                    nn_prior = c("empirical", "none"),
+                                    nn_prior_sd = NULL,
+                                    nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
   data$x <- coerce_count_matrix(data$x)
+  nn_prior <- validate_nn_prior_mode(nn_prior)
+  validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
   fq <- get_frequent_karyotypes(data$x, minobs)
   nn_info_list <- gen_nn_info(fq, pm) # Renamed 'nn' to 'nn_info_list' for clarity
   if (length(nn_info_list) > 0 && !is.null(nn_info_list[[1]]$ni)) { # Check if naming is needed
@@ -739,8 +827,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 
     birth_times_est <- find_birth_times(opt_res, time_range = c(-1000, max(current_timepoints)), minF = 1 / current_n0) # Renamed
     peak_times <- current_timepoints[apply(x, 1, which.max)]
-    mean_risetime <- mean(peak_times - birth_times_est, na.rm = TRUE)
-    birth_times_est[is.na(birth_times_est)] <- peak_times[is.na(birth_times_est)] - mean_risetime
+    # Neighbour estimation relies on finite parent birth times; fall back to peak-aligned
+    # values when root-finding cannot recover them.
+    birth_times_est <- sanitize_birth_times(birth_times_est, peak_times = peak_times, timepoints = current_timepoints)
 
     x0par <- opt_res$x0
     names(x0par) <- current_fq
@@ -841,10 +930,12 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       }
     }
 
-    if (any(!nn_present) && length(fc_prior_vals) > 0 && !all(is.na(fc_prior_vals))) {
+    use_empirical_prior <- nn_prior == "empirical"
+
+    if (use_empirical_prior && any(!nn_present) && length(fc_prior_vals) > 0 && !all(is.na(fc_prior_vals))) {
       mean_fc_prior_val <- mean(fc_prior_vals, na.rm = TRUE) # Renamed mean_fc_prior
-      sd_fc_prior_val <- sd(fc_prior_vals, na.rm = TRUE)   # Renamed sd_fc_prior
-      if(is.na(sd_fc_prior_val) || sd_fc_prior_val == 0) sd_fc_prior_val <- ALFAK_NN_PRIOR_SD_FLOOR
+      sd_fc_prior_val <- if (!is.null(nn_prior_sd)) nn_prior_sd else sd(fc_prior_vals, na.rm = TRUE)
+      if(is.na(sd_fc_prior_val) || sd_fc_prior_val == 0) sd_fc_prior_val <- nn_prior_sd_floor
 
       sapply_names_not_present <- names(current_nn_info)[!nn_present]
       if(length(sapply_names_not_present) > 0) {
@@ -985,21 +1076,38 @@ fitKrig <- function(fq_boot, nboot) {
   boot_predictions_list <- lapply(1:nboot, function(b) {
     # Original sampling strategy to avoid spatially correlated errors
     boot_f_indices <- cbind(sample(1:nrow(fboot), ncol(fboot), replace = TRUE), 1:ncol(fboot))
-    boot_f <- fboot[boot_f_indices, drop=FALSE] # Use drop=FALSE just in case
-    if(ncol(fboot) == 1 && nrow(fboot) > 0) boot_f <- as.vector(boot_f[,1]) else boot_f <- as.vector(boot_f)
+    boot_f <- as.vector(fboot[boot_f_indices])
 
+    valid_boot <- is.finite(boot_f)
+    ktrain_boot <- ktrain[valid_boot, , drop = FALSE]
+    boot_f_valid <- boot_f[valid_boot]
 
-    # Ensure ktrain and boot_f have compatible dimensions and enough data for Krig
-    if(nrow(ktrain) < 2 || length(boot_f) < 2 || length(unique(boot_f)) < 2 || nrow(ktrain) != length(boot_f)) {
+    # Every bootstrap iteration must return the same shape so failed Kriging fits
+    # degrade to NA predictions without breaking downstream aggregation.
+    if(nrow(ktrain_boot) < 2 ||
+       length(boot_f_valid) < 2 ||
+       nrow(unique(ktrain_boot)) < 2 ||
+       length(unique(boot_f_valid)) < 2) {
       warning("fitKrig: Insufficient or incompatible data for Kriging in bootstrap iteration. Returning NAs.")
-      return(rep(NA_real_, nrow(ktest)))
+      return(list(
+        fit_boot = NULL,
+        preds = rep(NA_real_, nrow(ktest))
+      ))
     }
 
-    fit_boot <- fields::Krig(ktrain, boot_f,
-                             cov.function = "stationary.cov",
-                             cov.args = list(Covariance = "Matern", smoothness = 1.5))
-    preds <- stats::predict(fit_boot, ktest)
-    list(fit_boot = fit_boot, preds = preds)
+    tryCatch({
+      fit_boot <- fields::Krig(ktrain_boot, boot_f_valid,
+                               cov.function = "stationary.cov",
+                               cov.args = list(Covariance = "Matern", smoothness = 1.5))
+      preds <- stats::predict(fit_boot, ktest)
+      list(fit_boot = fit_boot, preds = preds)
+    }, error = function(e) {
+      warning(sprintf("fitKrig: Kriging bootstrap iteration failed and will contribute NA predictions: %s", e$message))
+      list(
+        fit_boot = NULL,
+        preds = rep(NA_real_, nrow(ktest))
+      )
+    })
   })
 
   #boot_predictions <- do.call(cbind, boot_predictions_list)
