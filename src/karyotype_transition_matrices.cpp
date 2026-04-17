@@ -31,8 +31,8 @@ std::vector<int> parse_karyotype_string_cpp(const std::string& str) {
     if (pos != token.size()) {
       Rcpp::stop("Invalid karyotype ID '%s': malformed component '%s'.", str, token);
     }
-    if (value <= 0) {
-      Rcpp::stop("Invalid karyotype ID '%s': components must be positive integers.", str);
+    if (value < 0) {
+      Rcpp::stop("Invalid karyotype ID '%s': components must be non-negative integers.", str);
     }
     out.push_back(value);
   }
@@ -61,11 +61,11 @@ double pij_impl(int i, int j, double beta) {
 
 // [[Rcpp::export]]
 double pij_cpp(int i, int j, double beta) {
-  if (i <= 0) {
-    Rcpp::stop("`i` must be a positive integer.");
+  if (i < 0) {
+    Rcpp::stop("`i` must be a non-negative integer.");
   }
-  if (j <= 0) {
-    Rcpp::stop("`j` must be a positive integer.");
+  if (j < 0) {
+    Rcpp::stop("`j` must be a non-negative integer.");
   }
   if (!std::isfinite(beta) || beta < 0.0 || beta > 1.0) {
     Rcpp::stop("`beta` must be finite and in [0, 1].");

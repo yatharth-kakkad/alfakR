@@ -137,13 +137,15 @@ test_that("strict karyotype parsing rejects malformed IDs and mixed dimensions",
 
   expect_error(alfakR:::parse_karyotype_ids(c("2a.2", "2.3")), "Invalid karyotype ID")
   expect_error(alfakR:::parse_karyotype_ids("2..2"), "Invalid karyotype ID")
-  expect_error(alfakR:::parse_karyotype_ids(c("2.0.2", "2.3.2")), "Invalid karyotype ID")
+  parsed_zero <- alfakR:::parse_karyotype_ids(c("2.0.2", "2.3.2"))
+  expect_equal(unname(parsed_zero[1, ]), c(2L, 0L, 2L))
   expect_error(alfakR:::parse_karyotype_ids(c("2.-1.2", "2.3.2")), "Invalid karyotype ID")
   expect_error(alfakR:::parse_karyotype_ids(c("2.2", "2.2.2")), "same number of dot-separated components")
 })
 
 test_that("build_W_rcpp validates p, Nmax, and karyotype strings safely", {
   expect_silent(alfakR::build_W_rcpp(c("2.2", "2.3"), p = 0.01, Nmax = Inf))
+  expect_silent(alfakR::build_W_rcpp(c("2.0", "2.1"), p = 0.01, Nmax = Inf))
   expect_error(alfakR::build_W_rcpp(c("2.2", "2a.3"), p = 0.01), "Invalid karyotype ID")
   expect_error(alfakR::build_W_rcpp(c("2.2", "2.2.2"), p = 0.01), "same number of dot-separated components")
   expect_error(alfakR::build_W_rcpp(c("2.2", "2.3"), p = NA_real_), "`p`")
@@ -1550,8 +1552,12 @@ test_that("predict_evo ABM with times = 0 returns the initial composition", {
 })
 
 test_that("pij validates arguments and returns a valid probability", {
-  expect_error(alfakR::pij(0, 2, 0.1), "`i`")
-  expect_error(alfakR::pij(2, 0, 0.1), "`j`")
+  expect_equal(alfakR::pij(0, 0, 0.1), 1)
+  expect_equal(alfakR::pij(0, 2, 0.1), 0)
+  expect_gte(alfakR::pij(2, 0, 0.1), 0)
+  expect_lte(alfakR::pij(2, 0, 0.1), 1)
+  expect_error(alfakR::pij(-1, 2, 0.1), "`i`")
+  expect_error(alfakR::pij(2, -1, 0.1), "`j`")
   expect_error(alfakR::pij(2, 2, NA_real_), "`beta`")
   expect_error(alfakR::pij(2, 2, 1.5), "`beta`")
   val <- alfakR::pij(2, 2, 0.1)

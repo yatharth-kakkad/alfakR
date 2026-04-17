@@ -7,9 +7,9 @@
 pij(i, j, beta)
 }
 \arguments{
-\item{i}{Positive integer parent copy number.}
+\item{i}{Non-negative integer parent copy number.}
 
-\item{j}{Positive integer daughter copy number.}
+\item{j}{Non-negative integer daughter copy number.}
 
 \item{beta}{Finite mis-segregation probability in \verb{[0, 1]}.}
 }

@@ -43,8 +43,8 @@ std::vector<int> parse_karyotype_string_abm(const std::string& k_str, int expect
   while(std::getline(ss, segment, '.')) {
     try {
       int val = std::stoi(segment);
-      if (val <= 0) { // Assuming karyotype counts must be positive
-        Rcpp::warning("Non-positive count (%d) in karyotype string: %s. Skipping.", val, k_str.c_str());
+      if (val < 0) {
+        Rcpp::warning("Negative count (%d) in karyotype string: %s. Skipping.", val, k_str.c_str());
         return {}; 
       }
       cn.push_back(val);
@@ -179,8 +179,8 @@ std::pair<std::vector<int>, std::vector<int>> generate_misseg_daughters(
   bool d1_valid = true;
   bool d2_valid = true;
   for(size_t i = 0; i < parent_cn.size(); ++i) { // Loop up to parent_cn.size()
-    if(daughter1_cn[i] <= 0) d1_valid = false; // Counts cannot be negative
-    if(daughter2_cn[i] <= 0) d2_valid = false; // Changed from <=0 to <0, assuming 0 is viable if some other chrom present
+    if(daughter1_cn[i] < 0) d1_valid = false;
+    if(daughter2_cn[i] < 0) d2_valid = false;
   }
   
   std::pair<std::vector<int>, std::vector<int>> result;

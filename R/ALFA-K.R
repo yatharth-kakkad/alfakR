@@ -184,14 +184,14 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
 #'
 #' Validates `i`, `j`, and `beta` before calling the C++ transition kernel.
 #'
-#' @param i Positive integer parent copy number.
-#' @param j Positive integer daughter copy number.
+#' @param i Non-negative integer parent copy number.
+#' @param j Non-negative integer daughter copy number.
 #' @param beta Finite mis-segregation probability in `[0, 1]`.
 #' @return A transition probability in `[0, 1]`.
 #' @export
 pij <- function(i, j, beta) {
-  validate_positive_integer(i, "i")
-  validate_positive_integer(j, "j")
+  validate_nonnegative_integer(i, "i")
+  validate_nonnegative_integer(j, "j")
   validate_probability(beta, "beta", upper_inclusive = TRUE)
   pij_cpp(i, j, beta)
 }
@@ -214,7 +214,7 @@ parse_karyotype_ids <- function(ids) {
       call. = FALSE
     )
   }
-  bad <- vapply(pieces, function(x) any(!grepl("^[1-9][0-9]*$", x)), logical(1))
+  bad <- vapply(pieces, function(x) any(!grepl("^(0|[1-9][0-9]*)$", x)), logical(1))
   if (any(bad)) {
     stop(
       sprintf("Invalid karyotype ID(s): %s", paste(ids[bad], collapse = ", ")),
@@ -283,6 +283,16 @@ ALFAK_MAX_EXACT_INTEGER <- 2^53 - 1
 validate_positive_integer <- function(x, name) {
   if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 1 || x != floor(x)) {
     stop(sprintf("`%s` must be a single positive integer.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate scalar non-negative integer input
+#' @keywords internal
+#' @noRd
+validate_nonnegative_integer <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 0 || x != floor(x)) {
+    stop(sprintf("`%s` must be a single non-negative integer.", name), call. = FALSE)
   }
   invisible(NULL)
 }
