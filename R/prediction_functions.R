@@ -81,6 +81,53 @@ validate_integerish_scalar <- function(x, name, min_value = NULL, allow_zero = F
   invisible(NULL)
 }
 
+validate_cpp_integerish_scalar <- function(x, name, min_value = NULL, allow_negative_one = FALSE,
+                                           max_value = ALFAK_MAX_EXACT_INTEGER, target = c("long long", "int")) {
+  target <- match.arg(target)
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x != floor(x)) {
+    stop(sprintf("`%s` must be a single finite integer-valued scalar.", name), call. = FALSE)
+  }
+  if (abs(x) > max_value) {
+    stop(sprintf("`%s` must be exactly representable in R and no larger than %.0f in magnitude.", name, max_value), call. = FALSE)
+  }
+  if (!is.null(min_value) && x < min_value && !(allow_negative_one && x == -1)) {
+    stop(sprintf("`%s` must be >= %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+  }
+  if (target == "int" && (x < -.Machine$integer.max - 1 || x > .Machine$integer.max)) {
+    stop(sprintf("`%s` exceeds the supported C++ int range.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+largest_remainder_allocate <- function(prob, total_size) {
+  validate_finite_numeric_vector(prob, "prob")
+  original_names <- names(prob)
+  if (any(prob < 0)) {
+    stop("`prob` must contain only non-negative values.", call. = FALSE)
+  }
+  validate_cpp_integerish_scalar(total_size, "total_size", min_value = 0, target = "long long")
+  if (!length(prob)) {
+    return(integer(0))
+  }
+  if (sum(prob) <= 0) {
+    stop("`prob` must sum to a positive value.", call. = FALSE)
+  }
+  prob <- prob / sum(prob)
+  raw <- prob * total_size
+  counts <- floor(raw)
+  remaining <- as.integer(total_size - sum(counts))
+  if (remaining > 0) {
+    fractional <- raw - counts
+    order_idx <- order(-fractional, seq_along(fractional))
+    counts[order_idx[seq_len(remaining)]] <- counts[order_idx[seq_len(remaining)]] + 1
+  }
+  counts <- as.integer(counts)
+  if (!is.null(original_names)) {
+    names(counts) <- original_names
+  }
+  counts
+}
+
 validate_named_frequency_vector <- function(x, expected_names = NULL, expected_dim = NULL, name = "x0") {
   validate_finite_numeric_vector(x, name)
   if (is.null(names(x)) || any(!nzchar(names(x)))) {
@@ -237,18 +284,17 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   validate_probability_closed(p, "p")
   validate_times_vector(times, non_negative = TRUE)
   validate_named_frequency_vector(x0, expected_names = lscape$k)
-  validate_positive_integer(abm_pop_size, "abm_pop_size")
+  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
   validate_positive_finite(abm_delta_t, "abm_delta_t")
-  validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+  validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
   validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-  validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
   if (abm_record_interval == 0) {
     stop("`abm_record_interval` must not be zero.", call. = FALSE)
   }
-  validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
+  validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
   
-  initial_counts_raw <- x0 * abm_pop_size
-  initial_counts <- round(initial_counts_raw) 
+  initial_counts <- largest_remainder_allocate(x0, abm_pop_size)
   if(any(initial_counts < 0)) {
     warning("Negative counts generated for ABM initial population after rounding; treating as 0.", call.=FALSE)
     initial_counts[initial_counts < 0] <- 0 
@@ -262,7 +308,10 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   
   max_time <- max(times, na.rm = TRUE) 
   num_steps <- ceiling(max_time / abm_delta_t)
-  if (!is.finite(num_steps) || num_steps <= 0) stop("Number of ABM steps is non-positive (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  if (!is.finite(num_steps) || num_steps < 0) stop("Number of ABM steps is invalid (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  if (num_steps > 1e7) {
+    warning("ABM simulation requires a very large number of steps; check `times` and `abm_delta_t`.", call. = FALSE)
+  }
   if (num_steps > .Machine$integer.max) {
     stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
   }
@@ -328,8 +377,8 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   
   if (nrow(results_long_df) > 0 && "Karyotype" %in% names(results_long_df)) { # Check Karyotype col exists
     results_wide_df <- tidyr::pivot_wider(results_long_df,
-                                          names_from = .data$Karyotype, 
-                                          values_from = .data$Frequency,
+                                          names_from = "Karyotype",
+                                          values_from = "Frequency",
                                           values_fill = 0.0) 
     
     missing_cols <- setdiff(all_karyotypes_initial, names(results_wide_df))
@@ -482,15 +531,15 @@ predict_evo <- function(lscape, p, times, x0, prediction_type = "ODE",
   } else if (prediction_type == "ABM") {
     # ABM specific parameter validation
     validate_times_vector(times, non_negative = TRUE)
-    validate_positive_integer(abm_pop_size, "abm_pop_size")
+    validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
     validate_positive_finite(abm_delta_t, "abm_delta_t")
-    validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+    validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
     validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-    validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+    validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
     if (abm_record_interval == 0) {
       stop("'abm_record_interval' must not be zero.", call. = FALSE)
     }
-    validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
+    validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
     
     result_df <- run_abm_simulation(lscape = lscape, p = p, times = times, x0 = x0,
                                     abm_pop_size = abm_pop_size, abm_delta_t = abm_delta_t,
@@ -601,8 +650,6 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
   M_eigs <- Matrix::t(M_matrix)
   
   eig_result <- NULL
-  try_LR_on_LM_fail <- TRUE # Control if we try LR after LM
-
   if (nrow(M_eigs) < 3) {
     dense_eigs <- eigen(as.matrix(M_eigs))
     dominant_idx <- which.max(Re(dense_eigs$values))
@@ -611,16 +658,14 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
       vectors = dense_eigs$vectors[, dominant_idx, drop = FALSE]
     )
   } else {
-    eig_result <- tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LM"), error = function(e_lm) {
-      warning("RSpectra::eigs with 'LM' failed: ", e_lm$message, ". ", 
-              if(try_LR_on_LM_fail) "Trying 'LR'." else "Not trying 'LR'.", call. = FALSE)
-      if(try_LR_on_LM_fail){
-        return(tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LR"), error = function(e_lr) {
-          stop(sprintf("RSpectra::eigs also failed with 'LR': %s", e_lr$message), call. = FALSE)
-        }))
-      } else {
-        stop(sprintf("RSpectra::eigs with 'LM' failed: %s. Aborting.", e_lm$message), call. = FALSE)
-      }
+    eig_result <- tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LR"), error = function(e_lr) {
+      warning("RSpectra::eigs with 'LR' failed; falling back to dense eigen decomposition: ", e_lr$message, call. = FALSE)
+      dense_eigs <- eigen(as.matrix(M_eigs))
+      dominant_idx <- which.max(Re(dense_eigs$values))
+      list(
+        values = dense_eigs$values[dominant_idx],
+        vectors = dense_eigs$vectors[, dominant_idx, drop = FALSE]
+      )
     })
   }
   
@@ -720,26 +765,29 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   validate_probability_closed(p, "p")
   validate_times_vector(times, non_negative = TRUE)
   validate_named_frequency_vector(x0, expected_dim = ncol(centroids))
-  validate_positive_integer(abm_pop_size, "abm_pop_size")
+  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
   validate_positive_finite(abm_delta_t, "abm_delta_t")
-  validate_scalar_finite_number(abm_max_pop, "abm_max_pop")
+  validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
   validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-  validate_integerish_scalar(abm_record_interval, "abm_record_interval")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
   if (abm_record_interval == 0) {
     stop("'abm_record_interval' must not be zero.", call. = FALSE)
   }
-  validate_integerish_scalar(abm_seed, "abm_seed", allow_zero = TRUE)
+  validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
   validate_scalar_logical(normalize_freq, "normalize_freq")
   K <- ncol(centroids)
   
   ## -- initial population ----------------------------------------------------
-  init_counts <- round(x0 * abm_pop_size)
+  init_counts <- largest_remainder_allocate(x0, abm_pop_size)
   init_counts[init_counts < 0] <- 0
   init_list   <- as.list(init_counts)[init_counts > 0]  
   if(!length(init_list)) stop("Initial population is zero.", call. = FALSE)
   
   ## -- run C++ ---------------------------------------------------------------
   steps <- ceiling(max(times) / abm_delta_t)
+  if (steps > 1e7) {
+    warning("ABM simulation requires a very large number of steps; check `times` and `abm_delta_t`.", call. = FALSE)
+  }
   if (!is.finite(steps) || steps < 0 || steps > .Machine$integer.max) {
     stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
   }
@@ -778,8 +826,8 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   long <- do.call(rbind, long)
   
   if(nrow(long)) {
-    wide <- tidyr::pivot_wider(long, names_from = .data$Karyotype,
-                               values_from = .data$Frequency, values_fill = 0)
+    wide <- tidyr::pivot_wider(long, names_from = "Karyotype",
+                               values_from = "Frequency", values_fill = 0)
     miss <- setdiff(names(x0), names(wide))
     for(m in miss) wide[[m]] <- 0
     karyo_cols <- setdiff(names(wide), "time")

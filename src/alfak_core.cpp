@@ -7,19 +7,30 @@ namespace {
 
 double log_sum_exp_cpp(const std::vector<double>& values) {
   if (values.empty()) {
-    Rcpp::stop("log_sum_exp_cpp requires at least one finite value.");
+    Rcpp::stop("log_sum_exp_cpp requires at least one value.");
   }
-  double max_val = values[0];
+  bool has_finite_term = false;
+  double max_val = R_NegInf;
   for (double value : values) {
-    if (!R_finite(value)) {
-      Rcpp::stop("log_sum_exp_cpp requires only finite values.");
+    if (std::isnan(value) || value == R_PosInf) {
+      Rcpp::stop("log_sum_exp_cpp rejects NaN and +Inf inputs.");
     }
+    if (value == R_NegInf) {
+      continue;
+    }
+    has_finite_term = true;
     if (value > max_val) {
       max_val = value;
     }
   }
+  if (!has_finite_term) {
+    Rcpp::stop("log_sum_exp_cpp cannot normalize an all -Inf vector.");
+  }
   double accum = 0.0;
   for (double value : values) {
+    if (value == R_NegInf) {
+      continue;
+    }
     accum += std::exp(value - max_val);
   }
   return max_val + std::log(accum);
@@ -98,31 +109,33 @@ double alfak_neg_log_lik_cpp(Rcpp::NumericVector param,
   if (T != timepoints.size()) {
     Rcpp::stop("`counts` must have ncol equal to length(timepoints).");
   }
-  if (param.size() != (2 * K - 1)) {
-    Rcpp::stop("`param` must have length 2*K - 1.");
+  if (K == 1) {
+    Rcpp::stop("`alfak_neg_log_lik_cpp()` expects at least two karyotypes; K == 1 should be handled in R.");
+  }
+  if (param.size() != (2 * K - 2)) {
+    Rcpp::stop("`param` must have length 2*K - 2.");
   }
   std::vector<double> f_full(K, 0.0);
   std::vector<double> log_x0(K);
   std::vector<double> lv(K);
 
-  if (K > 1) {
-    double f_sum = 0.0;
-    for (int i = 0; i < K - 1; ++i) {
-      if (!R_finite(param[i])) {
-        Rcpp::stop("`param` must contain only finite values.");
-      }
-      f_full[i] = param[i];
-      f_sum += param[i];
+  double f_sum = 0.0;
+  for (int i = 0; i < K - 1; ++i) {
+    if (!R_finite(param[i])) {
+      Rcpp::stop("`param` must contain only finite values.");
     }
-    f_full[K - 1] = -f_sum;
+    f_full[i] = param[i];
+    f_sum += param[i];
   }
+  f_full[K - 1] = -f_sum;
 
-  for (int i = 0; i < K; ++i) {
+  for (int i = 0; i < K - 1; ++i) {
     if (!R_finite(param[K - 1 + i])) {
       Rcpp::stop("`param` must contain only finite values.");
     }
     log_x0[i] = param[K - 1 + i];
   }
+  log_x0[K - 1] = 0.0;
   for (int t = 0; t < T; ++t) {
     if (!R_finite(timepoints[t])) {
       Rcpp::stop("`timepoints` must contain only finite values.");

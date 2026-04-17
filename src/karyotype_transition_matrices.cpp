@@ -42,30 +42,40 @@ std::vector<int> parse_karyotype_string_cpp(const std::string& str) {
   return out;
 }
 
+double pij_impl(int i, int j, double beta) {
+  double qij = 0.0;
+  if (std::abs(i - j) > i) {
+    return qij;
+  }
+  if (j == 0) {
+    j = 2 * i;
+  }
+  for (int z = std::abs(i - j); z <= i; z += 2) {
+    qij += R::choose(i, z) * std::pow(beta, z) * std::pow(1 - beta, i - z) *
+      std::pow(0.5, z) * R::choose(z, (z + i - j) / 2);
+  }
+  return qij;
+}
+
 } // namespace
 
-//' Compute the probability pij that a parent with i chromosomes produces
-//' a daughter with j chromosomes under mis-segregation rate beta.
-//' @param i Integer number of chromosomes in the parent cell.
-//' @param j Integer number of chromosomes in the daughter cell.
-//' @param beta Double mis-segregation probability per chromosome copy.
-//' @return Double transition probability pij.
-//' @export
 // [[Rcpp::export]]
-double pij(int i, int j, double beta) {
- double qij = 0.0;
- if (std::abs(i - j) > i) {
-   return qij;
- }
- if (j == 0) {
-     j = 2 * i;
-   }
-   for (int z = std::abs(i - j); z <= i; z += 2) {
-     qij += R::choose(i, z) * std::pow(beta, z) * std::pow(1 - beta, i - z)
-     * std::pow(0.5, z) * R::choose(z, (z + i - j) / 2);
- }
- return qij;
- }
+double pij_cpp(int i, int j, double beta) {
+  if (i <= 0) {
+    Rcpp::stop("`i` must be a positive integer.");
+  }
+  if (j <= 0) {
+    Rcpp::stop("`j` must be a positive integer.");
+  }
+  if (!std::isfinite(beta) || beta < 0.0 || beta > 1.0) {
+    Rcpp::stop("`beta` must be finite and in [0, 1].");
+  }
+  double qij = pij_impl(i, j, beta);
+  if (!std::isfinite(qij) || qij < 0.0 || qij > 1.0) {
+    Rcpp::stop("Internal error: computed `pij` is not finite or not in [0, 1].");
+  }
+  return qij;
+}
 
  //' Prepare triplet inputs (i, j, x, dims, dimnames) for sparse A matrix.
  //' @param k_str Character vector of karyotype strings, e.g. "2.2.3".
@@ -112,7 +122,7 @@ double pij(int i, int j, double beta) {
        for (size_t m = 0; m < ki.size(); ++m) tot += std::abs(ki[m] - kj[m]);
        if (tot > Nmax) continue;
        double qij = 1.0;
-       for (size_t m = 0; m < ki.size(); ++m) qij *= pij(ki[m], kj[m], beta);
+       for (size_t m = 0; m < ki.size(); ++m) qij *= pij_impl(ki[m], kj[m], beta);
        double val = (i == j ? (2 * qij - 1) : (2 * qij));
        if (val != 0.0) {
          ii.push_back(i + 1);

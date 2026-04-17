@@ -21,15 +21,8 @@ alfak_qr_accum_cpp <- function(x_trim, dx_dt) {
     .Call(`_alfakR_alfak_qr_accum_cpp`, x_trim, dx_dt)
 }
 
-#' Compute the probability pij that a parent with i chromosomes produces
-#' a daughter with j chromosomes under mis-segregation rate beta.
-#' @param i Integer number of chromosomes in the parent cell.
-#' @param j Integer number of chromosomes in the daughter cell.
-#' @param beta Double mis-segregation probability per chromosome copy.
-#' @return Double transition probability pij.
-#' @export
-pij <- function(i, j, beta) {
-    .Call(`_alfakR_pij`, i, j, beta)
+pij_cpp <- function(i, j, beta) {
+    .Call(`_alfakR_pij_cpp`, i, j, beta)
 }
 
 get_A_inputs <- function(k_str, beta, Nmax_ = NULL) {

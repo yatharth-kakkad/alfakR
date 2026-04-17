@@ -7,17 +7,19 @@
 alfak(
   yi,
   outdir,
-  passage_times,
+  passage_times = NULL,
   minobs = 20,
   nboot = 45,
   n0 = 1e+05,
   nb = 1e+07,
   pm = 5e-05,
+  allow_noninteger_counts = FALSE,
   correct_efflux = FALSE,
   landscape_data_output = FALSE,
   nn_prior = c("empirical", "none"),
   nn_prior_sd = NULL,
-  nn_prior_sd_floor = 0.001
+  nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR,
+  krig_bootstrap_mode = c("joint", "marginal")
 )
 }
 \arguments{
@@ -56,6 +58,10 @@ size after transfer), used for g0 calculation. Default is 1e7.}
 \item{pm}{A numeric value, the per-locus mutation/error rate used in \code{pij}
 calculations. Default is 0.00005.}
 
+\item{allow_noninteger_counts}{Logical; if \code{FALSE} (default), non-integer
+counts in \code{yi$x} are rejected. If \code{TRUE}, they are rounded once at entry
+with a warning.}
+
 \item{correct_efflux}{Logical; if \code{TRUE}, apply the efflux correction after a
 one-time viability pre-check on the frequent karyotypes. The viability term
 currently depends only on total copy number through
@@ -78,6 +84,11 @@ empirically estimated prior standard deviation for latent-neighbour fitting.}
 \item{nn_prior_sd_floor}{Numeric scalar giving the minimum standard deviation
 used when the empirical prior variance is zero or too small. Default is
 \code{1e-3}.}
+
+\item{krig_bootstrap_mode}{Character; \code{"joint"} (default) samples one full
+bootstrap row at a time when building Kriging posterior samples, preserving
+within-bootstrap dependence across karyotypes. \code{"marginal"} retains the old
+column-wise synthetic resampling behavior.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.

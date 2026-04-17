@@ -32,6 +32,9 @@
 #'   size after transfer), used for g0 calculation. Default is 1e7.
 #' @param pm A numeric value, the per-locus mutation/error rate used in `pij`
 #'   calculations. Default is 0.00005.
+#' @param allow_noninteger_counts Logical; if `FALSE` (default), non-integer
+#'   counts in `yi$x` are rejected. If `TRUE`, they are rounded once at entry
+#'   with a warning.
 #' @param correct_efflux Logical; if `TRUE`, apply the efflux correction after a
 #'   one-time viability pre-check on the frequent karyotypes. The viability term
 #'   currently depends only on total copy number through
@@ -50,6 +53,10 @@
 #' @param nn_prior_sd_floor Numeric scalar giving the minimum standard deviation
 #'   used when the empirical prior variance is zero or too small. Default is
 #'   `1e-3`.
+#' @param krig_bootstrap_mode Character; `"joint"` (default) samples one full
+#'   bootstrap row at a time when building Kriging posterior samples, preserving
+#'   within-bootstrap dependence across karyotypes. `"marginal"` retains the old
+#'   column-wise synthetic resampling behavior.
 #'
 #' @return Returns the cross-validation R-squared value (`Rxv`) invisibly.
 #'   The function primarily saves its results to RDS files in the `outdir`:
@@ -113,11 +120,13 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
                   n0 = 1e5,
                   nb = 1e7,
                   pm = 0.00005,
+                  allow_noninteger_counts = FALSE,
                   correct_efflux=FALSE,
                   landscape_data_output = FALSE,
                   nn_prior = c("empirical", "none"),
                   nn_prior_sd = NULL,
-                  nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
+                  nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR,
+                  krig_bootstrap_mode = c("joint", "marginal")) {
 
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
@@ -126,11 +135,13 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
   validate_positive_integer(n0, "n0")
   validate_positive_integer(nb, "nb")
   validate_probability(pm, "pm")
+  validate_scalar_logical(allow_noninteger_counts, "allow_noninteger_counts")
   validate_scalar_logical(correct_efflux, "correct_efflux")
   validate_scalar_logical(landscape_data_output, "landscape_data_output")
   nn_prior <- validate_nn_prior_mode(nn_prior)
+  krig_bootstrap_mode <- validate_krig_bootstrap_mode(krig_bootstrap_mode)
   validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
-  yi$x <- coerce_count_matrix(yi$x)
+  yi$x <- coerce_count_matrix(yi$x, allow_noninteger_counts = allow_noninteger_counts)
   validate_positive_depth(yi$x)
 
   get_frequent_karyotypes(yi$x, minobs)
@@ -140,13 +151,14 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
 
   fq_boot <- solve_fitness_bootstrap(yi, minobs = minobs, nboot = nboot,
                                      n0 = n0, nb = nb, pm = pm,
+                                     allow_noninteger_counts = allow_noninteger_counts,
                                      passage_times = passage_times,correct_efflux=correct_efflux,
                                      nn_prior = nn_prior,
                                      nn_prior_sd = nn_prior_sd,
                                      nn_prior_sd_floor = nn_prior_sd_floor)
   saveRDS(fq_boot, file = file.path(outdir, "bootstrap_res.Rds"))
 
-  landscape_data <- fitKrig(fq_boot, nboot) # nboot is passed for Kriging iterations
+  landscape_data <- fitKrig(fq_boot, nboot, krig_bootstrap_mode = krig_bootstrap_mode)
   saveRDS(landscape_data$summary_stats, file = file.path(outdir, "landscape.Rds"))
   saveRDS(landscape_data$posterior_samples, file = file.path(outdir, "landscape_posterior_samples.Rds"))
 
@@ -168,21 +180,20 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
 # Helper functions (internal)
 ##########################################
 
-#' Calculate transition probability p_ij
-#' @keywords internal
-#' @noRd
+#' Calculate the single-chromosome transition probability p_ij
+#'
+#' Validates `i`, `j`, and `beta` before calling the C++ transition kernel.
+#'
+#' @param i Positive integer parent copy number.
+#' @param j Positive integer daughter copy number.
+#' @param beta Finite mis-segregation probability in `[0, 1]`.
+#' @return A transition probability in `[0, 1]`.
+#' @export
 pij <- function(i, j, beta) {
-  qij <- 0
-  if (abs(i - j) > i) { ## not enough copies for i->j
-    return(qij)
-  }
-  if (j == 0) j <- 2 * i
-  s <- seq(abs(i - j), i, by = 2)
-  for (z in s) {
-    qij <- qij + choose(i, z) * beta^z * (1 - beta)^(i - z) *
-      0.5^z * choose(z, (z + i - j) / 2)
-  }
-  return(qij)
+  validate_positive_integer(i, "i")
+  validate_positive_integer(j, "j")
+  validate_probability(beta, "beta", upper_inclusive = TRUE)
+  pij_cpp(i, j, beta)
 }
 
 #' Convert string like "1.2.3" to numeric vector
@@ -264,6 +275,7 @@ ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
 ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
 ALFAK_COUNT_INTEGER_TOL <- sqrt(.Machine$double.eps)
 ALFAK_KRIG_NSTEP_CV <- 200L
+ALFAK_MAX_EXACT_INTEGER <- 2^53 - 1
 
 #' Validate scalar positive integer input
 #' @keywords internal
@@ -305,6 +317,13 @@ validate_probability <- function(x, name, upper_inclusive = FALSE) {
     stop(sprintf("`%s` must be a single finite numeric value in %s.", name, bound), call. = FALSE)
   }
   invisible(NULL)
+}
+
+#' Validate Kriging bootstrap sampling mode
+#' @keywords internal
+#' @noRd
+validate_krig_bootstrap_mode <- function(mode) {
+  match.arg(mode, c("joint", "marginal"))
 }
 
 #' Validate that every timepoint has positive sequencing depth
@@ -397,7 +416,7 @@ validate_nn_prior_controls <- function(nn_prior_sd = NULL, nn_prior_sd_floor = A
 #' Coerce supported count containers to a base numeric matrix
 #' @keywords internal
 #' @noRd
-coerce_count_matrix <- function(x) {
+coerce_count_matrix <- function(x, allow_noninteger_counts = FALSE) {
   if (is.null(x)) {
     stop("`yi$x`/`data$x` must be a two-dimensional numeric count object.")
   }
@@ -421,10 +440,38 @@ coerce_count_matrix <- function(x) {
   }
   non_integer <- abs(x_mat - round(x_mat)) > ALFAK_COUNT_INTEGER_TOL
   if (any(non_integer)) {
+    if (!isTRUE(allow_noninteger_counts)) {
+      stop("Non-integer values detected in `yi$x`/`data$x`; set `allow_noninteger_counts = TRUE` to round once at entry.", call. = FALSE)
+    }
     warning("Non-integer values detected in `yi$x`/`data$x`; rounding to the nearest integer once at entry.")
     x_mat <- round(x_mat)
   }
   x_mat
+}
+
+#' Convert a probability vector to K-1 free softmax logits
+#' @keywords internal
+#' @noRd
+free_softmax_logits <- function(prob) {
+  if (!is.numeric(prob) || length(prob) == 0 || any(!is.finite(prob)) || any(prob < 0)) {
+    stop("`prob` must be a finite non-negative probability vector.", call. = FALSE)
+  }
+  if (length(prob) == 1) {
+    return(numeric(0))
+  }
+  prob <- prob / sum(prob)
+  ref <- prob[length(prob)]
+  if (!is.finite(ref) || ref <= 0) {
+    stop("The reference probability for free-softmax logits must be positive.", call. = FALSE)
+  }
+  log(prob[-length(prob)]) - log(ref)
+}
+
+#' Expand K-1 free logits into a K-vector of probabilities
+#' @keywords internal
+#' @noRd
+softmax_from_free_logits <- function(logits_free) {
+  softmax(c(logits_free, 0))
 }
 
 #' Ensure birth-time estimates are finite before neighbour estimation
@@ -928,7 +975,7 @@ joint_optimize <- function(counts, timepoints, f_init, x0_init) {
     return(list(f = 0, x0 = 1))
   }
   f_free_init <- f_init[seq_len(K - 1)]
-  x0_init_log <- log(x0_init + 1e-12) # Original had this epsilon
+  x0_init_log <- free_softmax_logits(x0_init)
   param_init <- c(f_free_init, x0_init_log)
   obj_fun <- function(par) neg_log_lik(par, counts, timepoints)
   opt <- run_optim_checked(par = param_init, fn = obj_fun,
@@ -937,8 +984,8 @@ joint_optimize <- function(counts, timepoints, f_init, x0_init) {
                            context = "joint_optimize")
   f_free_opt <- opt$par[seq_len(K - 1)]
   f_opt <- c(f_free_opt, -sum(f_free_opt))
-  log_x0_opt <- opt$par[K:(2 * K - 1)]
-  x0_opt <- softmax(log_x0_opt)
+  log_x0_opt <- opt$par[K:(2 * K - 2)]
+  x0_opt <- softmax_from_free_logits(log_x0_opt)
   list(f = f_opt, x0 = x0_opt)
 }
 
@@ -953,21 +1000,22 @@ project_forward_log <- function(x0, f, timepoints) {
 #' @keywords internal
 #' @noRd
 optimize_initial_frequencies <- function(x_obs, f, timepoints) {
-  if (nrow(x_obs) == 1) {
+  K <- nrow(x_obs)
+  if (K == 1) {
     return(1)
   }
-  loss_function <- function(log_x0) {
-    x0 <- softmax(log_x0)
+  loss_function <- function(log_x0_free) {
+    x0 <- softmax_from_free_logits(log_x0_free)
     x_pred <- project_forward_log(x0, f, timepoints)
     sum((x_pred - x_obs)^2)
   }
   x_ini <- x_obs[, 1] + 1e-6 # Original had this epsilon
   x_ini <- x_ini / sum(x_ini)
-  opt_result <- run_optim_checked(par = log(x_ini), fn = loss_function,
+  opt_result <- run_optim_checked(par = free_softmax_logits(x_ini), fn = loss_function,
                                   method = "BFGS",
                                   control = list(maxit = 500, reltol = 1e-8),
                                   context = "optimize_initial_frequencies")
-  softmax(opt_result$par)
+  softmax_from_free_logits(opt_result$par)
 }
 
 #' Find "birth times" for species based on reaching a minimum frequency
@@ -1001,16 +1049,17 @@ find_birth_times <- function(opt_res, time_range, minF) {
 #' @keywords internal
 #' @noRd
 solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, pm = 0.00005,
-                                    n0, nb, passage_times = NULL,correct_efflux=FALSE,
+                                    n0, nb, passage_times = NULL, allow_noninteger_counts = FALSE, correct_efflux=FALSE,
                                     nn_prior = c("empirical", "none"),
                                     nn_prior_sd = NULL,
                                     nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR) {
-  data$x <- coerce_count_matrix(data$x)
+  data$x <- coerce_count_matrix(data$x, allow_noninteger_counts = allow_noninteger_counts)
   validate_positive_depth(data$x)
   validate_positive_integer(nboot, "nboot")
   validate_positive_integer(n0, "n0")
   validate_positive_integer(nb, "nb")
   validate_probability(pm, "pm")
+  validate_scalar_logical(allow_noninteger_counts, "allow_noninteger_counts")
   validate_scalar_logical(correct_efflux, "correct_efflux")
   nn_prior <- validate_nn_prior_mode(nn_prior)
   validate_nn_prior_controls(nn_prior_sd = nn_prior_sd, nn_prior_sd_floor = nn_prior_sd_floor)
@@ -1101,6 +1150,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     xfit <- project_forward_log(x0par, fpar, current_timepoints)
     rownames(xfit) <- current_fq
     ntot <- colSums(boot_data) # Total counts from bootstrapped data
+    fq_totals <- colSums(boot_data[current_fq, , drop = FALSE])
+    fq_mass <- fq_totals / ntot
+    parent_xfit_full <- sweep(xfit, 2, fq_mass, "*")
     ntot_rounded <- round(ntot)
     build_opt_fc <- function(nni_param, prior_mean_param = NaN, prior_sd_param = NaN, do_prior_param = FALSE) {
       if (length(nni_param$nj) == 0) {
@@ -1110,7 +1162,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       parent_fitness_mean <- weighted_parent_fitness(nni_param, fpar)
       parent_fitness <- unname(fpar[nni_param$nj])
       parent_birth_times <- unname(birth_times_est[nni_param$nj])
-      parent_xfit <- xfit[nni_param$nj, , drop = FALSE]
+      parent_xfit <- parent_xfit_full[nni_param$nj, , drop = FALSE]
       child_obs <- rep(0, length(current_timepoints))
       if (child %in% rownames(boot_data)) {
         child_obs <- as.numeric(boot_data[child, ])
@@ -1276,8 +1328,9 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 #' Fit Kriging model to fitness data (Internal function)
 #' @keywords internal
 #' @noRd
-fitKrig <- function(fq_boot, nboot) {
+fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("joint", "marginal")) {
   validate_positive_integer(nboot, "nboot")
+  krig_bootstrap_mode <- validate_krig_bootstrap_mode(krig_bootstrap_mode)
   fboot <- cbind(fq_boot$final_fitness, fq_boot$nn_fitness)
   fq_str <- colnames(fq_boot$final_fitness)
   nn_str <- colnames(fq_boot$nn_fitness) # Will be NULL if nn_fitness is NULL or has no colnames
@@ -1321,21 +1374,34 @@ fitKrig <- function(fq_boot, nboot) {
   valid_median <- is.finite(fboot_median)
   krig_stable_mean <- NULL
   krig_stable_median <- NULL
+  safe_build_stable_krig <- function(label, train_x, train_y) {
+    tryCatch(
+      build_cached_krig_fit(
+        train_x,
+        train_y,
+        give_warnings = TRUE
+      )$fit,
+      error = function(e) {
+        warning(sprintf("fitKrig: Stable %s Kriging fit failed and will be omitted: %s", label, e$message))
+        NULL
+      }
+    )
+  }
   if (sum(valid_mean) >= 2 && length(unique(fboot_mean[valid_mean])) >= 2) {
-    krig_stable_mean <- build_cached_krig_fit(
+    krig_stable_mean <- safe_build_stable_krig(
+      "mean",
       ktrain[valid_mean, , drop = FALSE],
-      fboot_mean[valid_mean],
-      give_warnings = TRUE
-    )$fit
+      fboot_mean[valid_mean]
+    )
   } else {
     warning("fitKrig: Insufficient data for stable mean Kriging fit.")
   }
   if (sum(valid_median) >= 2 && length(unique(fboot_median[valid_median])) >= 2) {
-    krig_stable_median <- build_cached_krig_fit(
+    krig_stable_median <- safe_build_stable_krig(
+      "median",
       ktrain[valid_median, , drop = FALSE],
-      fboot_median[valid_median],
-      give_warnings = TRUE
-    )$fit
+      fboot_median[valid_median]
+    )
   } else {
     warning("fitKrig: Insufficient data for stable median Kriging fit.")
   }
@@ -1344,9 +1410,12 @@ fitKrig <- function(fq_boot, nboot) {
 
   # Use lapply directly, as cl is removed
   boot_predictions_list <- lapply(seq_len(nboot), function(b) {
-    # Original sampling strategy to avoid spatially correlated errors
-    boot_f_indices <- cbind(sample(1:nrow(fboot), ncol(fboot), replace = TRUE), 1:ncol(fboot))
-    boot_f <- as.vector(fboot[boot_f_indices])
+    boot_f <- if (krig_bootstrap_mode == "joint") {
+      as.numeric(fboot[sample(seq_len(nrow(fboot)), 1), ])
+    } else {
+      boot_f_indices <- cbind(sample(seq_len(nrow(fboot)), ncol(fboot), replace = TRUE), seq_len(ncol(fboot)))
+      as.vector(fboot[boot_f_indices])
+    }
 
     valid_boot <- is.finite(boot_f)
     ktrain_boot <- ktrain[valid_boot, , drop = FALSE]

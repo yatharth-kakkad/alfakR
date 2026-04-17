@@ -24,17 +24,17 @@ namespace alfakR {
         }
     }
 
-    inline double pij(int i, int j, double beta) {
-        typedef SEXP(*Ptr_pij)(SEXP,SEXP,SEXP);
-        static Ptr_pij p_pij = NULL;
-        if (p_pij == NULL) {
-            validateSignature("double(*pij)(int,int,double)");
-            p_pij = (Ptr_pij)R_GetCCallable("alfakR", "_alfakR_pij");
+    inline double pij_cpp(int i, int j, double beta) {
+        typedef SEXP(*Ptr_pij_cpp)(SEXP,SEXP,SEXP);
+        static Ptr_pij_cpp p_pij_cpp = NULL;
+        if (p_pij_cpp == NULL) {
+            validateSignature("double(*pij_cpp)(int,int,double)");
+            p_pij_cpp = (Ptr_pij_cpp)R_GetCCallable("alfakR", "_alfakR_pij_cpp");
         }
         RObject rcpp_result_gen;
         {
             RNGScope RCPP_rngScope_gen;
-            rcpp_result_gen = p_pij(Shield<SEXP>(Rcpp::wrap(i)), Shield<SEXP>(Rcpp::wrap(j)), Shield<SEXP>(Rcpp::wrap(beta)));
+            rcpp_result_gen = p_pij_cpp(Shield<SEXP>(Rcpp::wrap(i)), Shield<SEXP>(Rcpp::wrap(j)), Shield<SEXP>(Rcpp::wrap(beta)));
         }
         if (rcpp_result_gen.inherits("interrupted-error"))
             throw Rcpp::internal::InterruptedException();
