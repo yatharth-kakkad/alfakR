@@ -452,29 +452,68 @@ test_that("xval samples one real bootstrap replicate for all folds", {
 
   testthat::with_mocked_bindings(
     {
-      testthat::with_mocked_bindings(
-        {
-          set.seed(123)
-          res <- alfakR:::xval(fq_boot)
-          observed <- as.numeric(res$tmp[, "test_f"])
-          is_real_row <- vapply(
-            seq_len(nrow(fq_boot$final_fitness)),
-            function(i) identical(observed, as.numeric(fq_boot$final_fitness[i, ])),
-            logical(1)
-          )
-          expect_true(any(is_real_row))
-        },
-        predict = function(object, newdata, ...) {
-          rep(mean(object$train_f), nrow(newdata))
-        },
-        .package = "stats"
+      set.seed(123)
+      res <- alfakR:::xval(fq_boot)
+      observed <- as.numeric(res$tmp[, "test_f"])
+      is_real_row <- vapply(
+        seq_len(nrow(fq_boot$final_fitness)),
+        function(i) identical(observed, as.numeric(fq_boot$final_fitness[i, ])),
+        logical(1)
       )
+      expect_true(any(is_real_row))
     },
-    Krig = function(x, Y, ...) {
-      structure(list(train_f = Y), class = "mock_krig")
+    build_cached_krig_fit = function(ktrain, y, kpred = NULL, give_warnings = TRUE) {
+      list(fit = structure(list(train_f = y), class = "mock_krig"), pred_dist = NULL)
     },
-    .package = "fields"
+    predict_cached_krig = function(object, x, dist_mat, ...) {
+      rep(mean(object$train_f), nrow(x))
+    },
+    .package = "alfakR"
   )
+})
+
+test_that("cached Krig refits match fresh fields::Krig fits", {
+  set.seed(1)
+  ktrain <- matrix(runif(16), ncol = 2)
+  y_initial <- c(0.2, -0.1, 0.3, 0.05, -0.2, 0.4, 0.1, -0.15)
+  y_updated <- c(0.4, -0.25, 0.15, 0.1, -0.1, 0.35, 0.05, -0.05)
+  kpred <- matrix(
+    c(0.25, 0.5,
+      0.75, 0.5,
+      0.5, 0.25),
+    ncol = 2,
+    byrow = TRUE
+  )
+
+  cache <- suppressWarnings(
+    alfakR:::build_cached_krig_fit(ktrain, y_initial, kpred = kpred, give_warnings = FALSE)
+  )
+  refit <- suppressWarnings(
+    alfakR:::refit_cached_krig(
+      cache,
+      y = y_updated,
+      x_pred = kpred,
+      pred_dist = cache$pred_dist,
+      give_warnings = FALSE
+    )
+  )
+
+  fresh_fit <- suppressWarnings(
+    fields::Krig(
+      ktrain,
+      y_updated,
+      cov.function = "stationary.cov",
+      cov.args = list(Covariance = "Matern", smoothness = 1.5),
+      nstep.cv = alfakR:::ALFAK_KRIG_NSTEP_CV,
+      give.warnings = FALSE
+    )
+  )
+  fresh_preds <- as.numeric(stats::predict(fresh_fit, kpred))
+
+  expect_equal(refit$fit$lambda, fresh_fit$lambda, tolerance = 1e-10)
+  expect_equal(refit$fit$eff.df, fresh_fit$eff.df, tolerance = 1e-10)
+  expect_equal(as.numeric(refit$preds), fresh_preds, tolerance = 1e-8)
+  expect_equal(as.numeric(stats::predict(refit$fit, kpred)), fresh_preds, tolerance = 1e-8)
 })
 
 test_that("fitKrig returns structured NA bootstrap outputs when a bootstrap fit is not trainable", {

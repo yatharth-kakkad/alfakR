@@ -214,6 +214,7 @@ ALFAK_FEXP_DELTA_TOL <- 1e-8
 ALFAK_EFFLUX_VIABILITY_TOL <- 1e-6
 ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
 ALFAK_COUNT_INTEGER_TOL <- sqrt(.Machine$double.eps)
+ALFAK_KRIG_NSTEP_CV <- 200L
 
 #' Validate nearest-neighbour prior mode
 #' @keywords internal
@@ -556,6 +557,132 @@ gen_all_neighbours <- function(ids, as.strings = TRUE, remove_nullisomes = TRUE)
   if (remove_nullisomes && nrow(n) > 0) # Check nrow > 0 before apply
     n <- n[apply(n, 1, function(ni) sum(ni < 1) == 0), , drop = FALSE]
   n
+}
+
+fields_krig_find_lambda <- local({
+  krig_find_lambda <- get("KrigFindLambda", envir = asNamespace("fields"))
+  function(...) krig_find_lambda(...)
+})
+
+fields_krig_coef <- local({
+  krig_coef <- get("Krig.coef", envir = asNamespace("fields"))
+  function(...) krig_coef(...)
+})
+
+fields_krig_parameters <- local({
+  krig_parameters <- get("Krig.parameters", envir = asNamespace("fields"))
+  function(...) krig_parameters(...)
+})
+
+fields_krig_ynew <- local({
+  krig_ynew <- get("Krig.ynew", envir = asNamespace("fields"))
+  function(...) krig_ynew(...)
+})
+
+krig_covariance_args <- function() {
+  list(
+    Covariance = "Matern",
+    smoothness = 1.5
+  )
+}
+
+predict_cached_krig <- function(object, x, dist_mat, Z = NULL, drop.Z = FALSE, just.fixed = FALSE) {
+  if (is.null(x)) {
+    x <- object$x
+  } else {
+    x <- as.matrix(x)
+  }
+  if (is.null(Z)) {
+    Z <- object$Z
+  } else {
+    Z <- as.matrix(Z)
+  }
+
+  x_scaled <- scale(x, object$transform$x.center, object$transform$x.scale)
+  null_fun <- get(object$null.function.name, envir = asNamespace("fields"))
+  Tmatrix <- do.call(null_fun, c(object$null.args, list(x = x_scaled, Z = Z, drop.Z = drop.Z)))
+
+  if (drop.Z) {
+    pred <- Tmatrix %*% object$d[object$ind.drift]
+  } else {
+    pred <- Tmatrix %*% object$d
+  }
+
+  if (!just.fixed) {
+    cov_args <- object$args
+    cov_args$distMat <- dist_mat
+    cov_fun <- get(object$cov.function.name, envir = asNamespace("fields"))
+    pred <- pred + do.call(cov_fun, c(cov_args, list(x1 = x_scaled, x2 = object$knots, C = object$c)))
+  }
+
+  as.numeric(pred)
+}
+
+build_cached_krig_fit <- function(ktrain, y, kpred = NULL, give_warnings = TRUE) {
+  train_dist <- fields::rdist(ktrain, ktrain)
+  pred_dist <- NULL
+  if (!is.null(kpred)) {
+    pred_dist <- fields::rdist(kpred, ktrain)
+  }
+  fit <- fields::Krig(
+    ktrain,
+    y,
+    cov.function = "stationary.cov",
+    cov.args = krig_covariance_args(),
+    nstep.cv = ALFAK_KRIG_NSTEP_CV,
+    give.warnings = give_warnings
+  )
+  list(fit = fit, train_dist = train_dist, pred_dist = pred_dist)
+}
+
+refit_cached_krig <- function(cache, y, x_pred = NULL, pred_dist = cache$pred_dist, give_warnings = TRUE) {
+  fit <- cache$fit
+  gcv_out <- fields_krig_find_lambda(
+    fit,
+    nstep.cv = ALFAK_KRIG_NSTEP_CV,
+    cost = fit$cost,
+    offset = fit$offset,
+    y = y,
+    give.warnings = give_warnings
+  )
+
+  if (fit$method != "user") {
+    fit$lambda <- gcv_out$lambda.est[fit$method, 1]
+    fit$eff.df <- gcv_out$lambda.est[fit$method, 2]
+  }
+
+  y_info <- fields_krig_ynew(fit, y = y)
+  coef_out <- fields_krig_coef(fit, lambda = fit$lambda, y = y)
+
+  fit$gcv.grid <- gcv_out$gcv.grid
+  fit$lambda.est <- gcv_out$lambda.est
+  fit$warningTable <- gcv_out$warningTable
+  fit$y <- as.numeric(y)
+  fit$yM <- y_info$yM
+  fit$c <- coef_out$c
+  fit$d <- coef_out$d
+  fit$tauHat.rep <- coef_out$tauHat.rep
+  fit$tauHat.pure.error <- coef_out$tauHat.pure.error
+  fit$pure.ss <- coef_out$pure.ss
+  fit$fitted.values <- predict_cached_krig(fit, fit$x, dist_mat = cache$train_dist, Z = fit$Z)
+  fit$residuals <- fit$y - fit$fitted.values
+
+  fit_params <- fields_krig_parameters(fit)
+  fit[names(fit_params)] <- fit_params
+
+  if (fit$method == "user" && !is.na(fit$tau2)) {
+    fit$best.model <- c(fit$lambda, fit$tau2, fit$sigma)
+  } else {
+    fit$best.model <- c(fit$lambda, fit$tauHat.MLE^2, fit$sigmahat)
+  }
+  fit$rhohat <- fit$sigmahat
+
+  preds <- NULL
+  if (!is.null(x_pred)) {
+    preds <- predict_cached_krig(fit, x_pred, dist_mat = pred_dist)
+  }
+
+  list(fit = fit, preds = preds)
 }
 
 #' Bootstrap counts from data matrix
@@ -1028,21 +1155,25 @@ fitKrig <- function(fq_boot, nboot) {
   krig_stable_mean <- NULL
   krig_stable_median <- NULL
   if (sum(valid_mean) >= 2 && length(unique(fboot_mean[valid_mean])) >= 2) {
-    krig_stable_mean <- fields::Krig(ktrain[valid_mean, , drop = FALSE],
-                                     fboot_mean[valid_mean],
-                                     cov.function = "stationary.cov",
-                                     cov.args = list(Covariance = "Matern", smoothness = 1.5))
+    krig_stable_mean <- build_cached_krig_fit(
+      ktrain[valid_mean, , drop = FALSE],
+      fboot_mean[valid_mean],
+      give_warnings = TRUE
+    )$fit
   } else {
     warning("fitKrig: Insufficient data for stable mean Kriging fit.")
   }
   if (sum(valid_median) >= 2 && length(unique(fboot_median[valid_median])) >= 2) {
-    krig_stable_median <- fields::Krig(ktrain[valid_median, , drop = FALSE],
-                                       fboot_median[valid_median],
-                                       cov.function = "stationary.cov",
-                                       cov.args = list(Covariance = "Matern", smoothness = 1.5))
+    krig_stable_median <- build_cached_krig_fit(
+      ktrain[valid_median, , drop = FALSE],
+      fboot_median[valid_median],
+      give_warnings = TRUE
+    )$fit
   } else {
     warning("fitKrig: Insufficient data for stable median Kriging fit.")
   }
+
+  boot_fit_cache <- new.env(parent = emptyenv())
 
   # Use lapply directly, as cl is removed
   boot_predictions_list <- lapply(1:nboot, function(b) {
@@ -1068,10 +1199,34 @@ fitKrig <- function(fq_boot, nboot) {
     }
 
     tryCatch({
-      fit_boot <- fields::Krig(ktrain_boot, boot_f_valid,
-                               cov.function = "stationary.cov",
-                               cov.args = list(Covariance = "Matern", smoothness = 1.5))
-      preds <- stats::predict(fit_boot, ktest)
+      cache_key <- paste(which(valid_boot), collapse = ",")
+      if (!nzchar(cache_key)) {
+        cache_key <- "empty"
+      }
+
+      if (!exists(cache_key, envir = boot_fit_cache, inherits = FALSE)) {
+        cache_entry <- build_cached_krig_fit(
+          ktrain_boot,
+          boot_f_valid,
+          kpred = ktest,
+          give_warnings = TRUE
+        )
+        assign(cache_key, cache_entry, envir = boot_fit_cache)
+        fit_boot <- cache_entry$fit
+        preds <- predict_cached_krig(fit_boot, ktest, dist_mat = cache_entry$pred_dist)
+      } else {
+        cache_entry <- get(cache_key, envir = boot_fit_cache, inherits = FALSE)
+        refit <- refit_cached_krig(
+          cache_entry,
+          y = boot_f_valid,
+          x_pred = ktest,
+          pred_dist = cache_entry$pred_dist,
+          give_warnings = TRUE
+        )
+        fit_boot <- refit$fit
+        preds <- refit$preds
+      }
+
       list(fit_boot = fit_boot, preds = preds)
     }, error = function(e) {
       warning(sprintf("fitKrig: Kriging bootstrap iteration failed and will contribute NA predictions: %s", e$message))
@@ -1197,10 +1352,9 @@ xval <- function(fq_boot) {
       return(cbind(test_f = test_f, est_f = rep(NA, length(test_f))))
     }
 
-    fit <- fields::Krig(train_k, train_f,
-                        cov.function = "stationary.cov",
-                        cov.args = list(Covariance = "Matern", smoothness = 1.5))
-    est_f <- stats::predict(fit, test_k)
+    fit_cache <- build_cached_krig_fit(train_k, train_f, kpred = test_k, give_warnings = TRUE)
+    fit <- fit_cache$fit
+    est_f <- predict_cached_krig(fit, test_k, dist_mat = fit_cache$pred_dist)
     cbind(test_f, est_f)
   })
 
