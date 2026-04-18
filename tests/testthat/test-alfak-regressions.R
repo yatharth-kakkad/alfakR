@@ -262,6 +262,55 @@ test_that("zero-depth timepoints are rejected before normalization or bootstrap"
   )
 })
 
+test_that("bootstrap frequent-subset zero columns are normalized to all-zero frequencies", {
+  yi <- make_simple_yi(
+    make_counts(
+      c(1, 1,
+        20, 20),
+      rownames_vec = c("2.2.2", "2.2.1"),
+      colnames_vec = c("1", "360")
+    )
+  )
+  seen <- new.env(parent = emptyenv())
+
+  testthat::with_mocked_bindings(
+    {
+      res <- suppressWarnings(
+        alfakR:::solve_fitness_bootstrap(
+          yi,
+          minobs = 30,
+          nboot = 1,
+          n0 = 1e4,
+          nb = 1e6,
+          pm = 1e-4
+        )
+      )
+      expect_true(all(is.finite(res$final_fitness)))
+    },
+    bootstrap_counts = function(data) {
+      make_counts(
+        c(19, 1,
+          0, 20),
+        rownames_vec = rownames(data),
+        colnames_vec = colnames(data)
+      )
+    },
+    compute_dx_dt = function(x, timepoints) {
+      seen$x <- x
+      matrix(0, nrow = nrow(x), ncol = ncol(x) - 1)
+    },
+    run_solve_qp_checked = function(...) list(solution = 0),
+    optimize_initial_frequencies = function(...) 1,
+    joint_optimize = function(...) list(f = 0, x0 = 1),
+    find_birth_times = function(...) 0,
+    gen_nn_info = function(...) list(),
+    .package = "alfakR"
+  )
+
+  expect_equal(seen$x[, 1], 0)
+  expect_equal(seen$x[, 2], 1)
+})
+
 test_that("alfak validates optional arguments before running heavy work", {
   yi <- make_simple_yi(
     make_counts(

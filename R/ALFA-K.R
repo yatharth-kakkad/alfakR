@@ -609,9 +609,14 @@ resolve_time_axis <- function(data, passage_times = NULL) {
 #' @keywords internal
 #' @noRd
 normalize_columns <- function(count_matrix) {
-  validate_positive_depth(count_matrix)
   totals <- colSums(count_matrix)
-  sweep(count_matrix, 2, totals, "/")
+  normalized <- matrix(0, nrow = nrow(count_matrix), ncol = ncol(count_matrix),
+                       dimnames = dimnames(count_matrix))
+  positive_totals <- totals > 0
+  if (any(positive_totals)) {
+    normalized[, positive_totals] <- sweep(count_matrix[, positive_totals, drop = FALSE], 2, totals[positive_totals], "/")
+  }
+  normalized
 }
 
 #' Validate viability for efflux correction once before bootstrapping
