@@ -44,8 +44,8 @@ matching the dimension of \code{centroids}.}
 \item{abm_culling_survival}{Fraction of cells retained when the population
 exceeds \code{abm_max_pop}.}
 
-\item{abm_record_interval}{Record population state every N steps. If a negative value
-is provided, then population is recorded every passage.}
+\item{abm_record_interval}{Record population state every N steps when \verb{>= 1}.
+Use \code{-1} to record only at culling events. \code{0} is invalid.}
 
 \item{abm_seed}{RNG seed.  Use \code{-1} for a random seed.}
 

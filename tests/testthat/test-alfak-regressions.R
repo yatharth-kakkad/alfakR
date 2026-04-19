@@ -1600,6 +1600,80 @@ test_that("predict_evo ABM with times = 0 returns the initial composition", {
   expect_equal(as.numeric(res[1, c("2.2", "3.1")]), unname(x0), tolerance = 1e-12)
 })
 
+test_that("ABM public wrappers accept abm_record_interval = -1 and reject other negative values", {
+  lscape <- data.frame(k = c("2.2", "3.1"), mean = c(0.1, 0.2), stringsAsFactors = FALSE)
+  x0 <- c("2.2" = 0.25, "3.1" = 0.75)
+  captured_interval <- NULL
+
+  testthat::with_mocked_bindings(
+    {
+      res <- suppressMessages(
+        alfakR::predict_evo(
+          lscape = lscape,
+          p = 0.01,
+          times = c(0, 0.1),
+          x0 = x0,
+          prediction_type = "ABM",
+          abm_pop_size = 100,
+          abm_delta_t = 0.1,
+          abm_record_interval = -1,
+          abm_seed = 1
+        )
+      )
+      expect_identical(captured_interval, -1L)
+      expect_true(is.data.frame(res))
+    },
+    run_karyotype_abm = function(initial_population_r, fitness_map_r, p_missegregation, dt,
+                                 n_steps, max_population_size, culling_survival_fraction,
+                                 record_interval, seed, grf_centroids, grf_lambda) {
+      captured_interval <<- record_interval
+      list("0" = stats::setNames(c(25L, 75L), c("2.2", "3.1")))
+    },
+    .package = "alfakR"
+  )
+
+  captured_grf_interval <- NULL
+  testthat::with_mocked_bindings(
+    {
+      res <- alfakR::run_abm_simulation_grf(
+        centroids = matrix(c(2, 2, 3, 1), ncol = 2, byrow = TRUE),
+        lambda = 1,
+        p = 0.01,
+        times = c(0, 0.1),
+        x0 = c("2.2" = 1),
+        abm_pop_size = 100,
+        abm_delta_t = 0.1,
+        abm_record_interval = -1,
+        abm_seed = 1
+      )
+      expect_identical(captured_grf_interval, -1L)
+      expect_true(is.data.frame(res))
+    },
+    run_karyotype_abm = function(initial_population_r, fitness_map_r, p_missegregation, dt,
+                                 n_steps, max_population_size, culling_survival_fraction,
+                                 record_interval, seed, grf_centroids, grf_lambda) {
+      captured_grf_interval <<- record_interval
+      list("0" = stats::setNames(c(100L), "2.2"))
+    },
+    .package = "alfakR"
+  )
+
+  expect_error(
+    alfakR::predict_evo(
+      lscape = lscape,
+      p = 0.01,
+      times = c(0, 0.1),
+      x0 = x0,
+      prediction_type = "ABM",
+      abm_pop_size = 100,
+      abm_delta_t = 0.1,
+      abm_record_interval = -2,
+      abm_seed = 1
+    ),
+    "abm_record_interval"
+  )
+})
+
 test_that("pij validates arguments and returns a valid probability", {
   expect_equal(alfakR::pij(0, 0, 0.1), 1)
   expect_equal(alfakR::pij(0, 2, 0.1), 0)

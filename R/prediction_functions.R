@@ -255,7 +255,8 @@ run_ode_simulation <- function(lscape, p, times, x0, ode_method,Nmax=Inf) {
 #' @param abm_delta_t Time duration of a single ABM step.
 #' @param abm_max_pop Maximum population size (carrying capacity), <= 0 for unlimited.
 #' @param abm_culling_survival Survival fraction if max_pop is exceeded.
-#' @param abm_record_interval Record state every N steps.
+#' @param abm_record_interval Record state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #' @param abm_seed RNG seed (-1 for random).
 #' @return Data frame with 'time' column and frequency columns for each karyotype.
 #' @importFrom stats setNames
@@ -288,7 +289,8 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   validate_positive_finite(abm_delta_t, "abm_delta_t")
   validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
   validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                 min_value = 1, allow_negative_one = TRUE, target = "int")
   if (abm_record_interval == 0) {
     stop("`abm_record_interval` must not be zero.", call. = FALSE)
   }
@@ -439,7 +441,8 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
 #'   as handled by the C++ function). Used only if `prediction_type` is "ABM". Default is 1e7.
 #' @param abm_culling_survival numeric. Fraction of population surviving when `abm_max_pop`
 #'   is exceeded (0 <= x <= 1). Used only if `prediction_type` is "ABM". Default is 0.1.
-#' @param abm_record_interval integer. Record ABM state every N steps.
+#' @param abm_record_interval integer. Record ABM state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #'   Used only if `prediction_type` is "ABM". Default is 10.
 #' @param Nmax Optional limit to the number of missegregations allowable (ODE model only).
 #' @param abm_seed integer. Seed for ABM's random number generator (-1 for a random seed based on device,
@@ -535,7 +538,8 @@ predict_evo <- function(lscape, p, times, x0, prediction_type = "ODE",
     validate_positive_finite(abm_delta_t, "abm_delta_t")
     validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
     validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-    validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
+    validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                   min_value = 1, allow_negative_one = TRUE, target = "int")
     if (abm_record_interval == 0) {
       stop("'abm_record_interval' must not be zero.", call. = FALSE)
     }
@@ -721,8 +725,8 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
 #' @param abm_max_pop Carrying capacity. Use \code{<= 0} for unlimited.
 #' @param abm_culling_survival Fraction of cells retained when the population
 #'   exceeds \code{abm_max_pop}.
-#' @param abm_record_interval Record population state every N steps. If a negative value 
-#' is provided, then population is recorded every passage.
+#' @param abm_record_interval Record population state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #' @param abm_seed RNG seed.  Use \code{-1} for a random seed.
 #' @param normalize_freq Should ABM counts be normalized to frequencies?
 #' @return A **wide data‑frame**: first column \code{time}, remaining columns
@@ -769,7 +773,8 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   validate_positive_finite(abm_delta_t, "abm_delta_t")
   validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", min_value = 0, target = "long long")
   validate_probability_closed(abm_culling_survival, "abm_culling_survival")
-  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                 min_value = 1, allow_negative_one = TRUE, target = "int")
   if (abm_record_interval == 0) {
     stop("'abm_record_interval' must not be zero.", call. = FALSE)
   }
