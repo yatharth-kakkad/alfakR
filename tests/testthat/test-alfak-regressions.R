@@ -1145,7 +1145,7 @@ test_that("find_steady_state selects the eigenvalue with the largest real part",
   expect_equal(unname(ss), terminal, tolerance = 1e-4)
 })
 
-test_that("nearest-neighbour exposure uses full-population scaling for parent frequencies", {
+test_that("nearest-neighbour exposure uses projected frequent-parent frequencies directly", {
   yi <- list(
     x = make_counts(
       c(10, 10,
@@ -1195,7 +1195,7 @@ test_that("nearest-neighbour exposure uses full-population scaling for parent fr
     .package = "alfakR"
   )
 
-  expect_equal(as.numeric(seen$parent_xfit), c(0.8, 0.6) * (10 / 11), tolerance = 1e-12)
+  expect_equal(as.numeric(seen$parent_xfit), c(0.8, 0.6), tolerance = 1e-12)
 })
 
 test_that("ABM parent accounting consumes each dividing parent exactly once", {

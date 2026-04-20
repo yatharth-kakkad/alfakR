@@ -1163,9 +1163,6 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     xfit <- project_forward_log(x0par, fpar, current_timepoints)
     rownames(xfit) <- current_fq
     ntot <- colSums(boot_data) # Total counts from bootstrapped data
-    fq_totals <- colSums(boot_data[current_fq, , drop = FALSE])
-    fq_mass <- fq_totals / ntot
-    parent_xfit_full <- sweep(xfit, 2, fq_mass, "*")
     ntot_rounded <- round(ntot)
     build_opt_fc <- function(nni_param, prior_mean_param = NaN, prior_sd_param = NaN, do_prior_param = FALSE) {
       if (length(nni_param$nj) == 0) {
@@ -1175,7 +1172,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
       parent_fitness_mean <- weighted_parent_fitness(nni_param, fpar)
       parent_fitness <- unname(fpar[nni_param$nj])
       parent_birth_times <- unname(birth_times_est[nni_param$nj])
-      parent_xfit <- parent_xfit_full[nni_param$nj, , drop = FALSE]
+      parent_xfit <- xfit[nni_param$nj, , drop = FALSE]
       child_obs <- rep(0, length(current_timepoints))
       if (child %in% rownames(boot_data)) {
         child_obs <- as.numeric(boot_data[child, ])
