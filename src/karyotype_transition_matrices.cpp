@@ -57,6 +57,24 @@ double pij_impl(int i, int j, double beta) {
   return qij;
 }
 
+NumericMatrix validate_transition_matrix(List parms, int expected_size, const char* state_name) {
+  if (!parms.containsElementNamed("A")) {
+    Rcpp::stop("`parms$A` must be provided.");
+  }
+  SEXP a_sexp = parms["A"];
+  if (!Rf_isMatrix(a_sexp) || (TYPEOF(a_sexp) != REALSXP && TYPEOF(a_sexp) != INTSXP)) {
+    Rcpp::stop("`parms$A` must be a numeric matrix.");
+  }
+  NumericMatrix A(a_sexp);
+  if (A.nrow() != A.ncol()) {
+    Rcpp::stop("`parms$A` must be a square matrix.");
+  }
+  if (A.nrow() != expected_size) {
+    Rcpp::stop("`parms$A` must have nrow(A) == ncol(A) == length(%s).", state_name);
+  }
+  return A;
+}
+
 } // namespace
 
 // [[Rcpp::export]]
@@ -143,9 +161,9 @@ double pij_cpp(int i, int j, double beta) {
    );
  }
  
- // [[Rcpp::export]]
- List chrmod_cpp(double time, NumericVector state, List parms) {
-   NumericMatrix A = parms["A"];
+// [[Rcpp::export]]
+List chrmod_cpp(double time, NumericVector state, List parms) {
+   NumericMatrix A = validate_transition_matrix(parms, state.size(), "state");
    int n = state.size();
    NumericVector ds(n);
    for (int j = 0; j < n; ++j) {
@@ -156,9 +174,9 @@ double pij_cpp(int i, int j, double beta) {
    return List::create(ds);
  }
  
- // [[Rcpp::export]]
- List chrmod_rel_cpp(double time, NumericVector x, List parms) {
-   NumericMatrix A = parms["A"];
+// [[Rcpp::export]]
+List chrmod_rel_cpp(double time, NumericVector x, List parms) {
+   NumericMatrix A = validate_transition_matrix(parms, x.size(), "x");
    int n = x.size();
    NumericVector g(n);
    for (int j = 0; j < n; ++j) {

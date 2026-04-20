@@ -221,7 +221,22 @@ parse_karyotype_ids <- function(ids) {
       call. = FALSE
     )
   }
-  mat <- matrix(as.integer(unlist(pieces, use.names = FALSE)), nrow = length(ids), byrow = TRUE)
+  flat_pieces <- unlist(pieces, use.names = FALSE)
+  int_max_chr <- as.character(.Machine$integer.max)
+  piece_nchar <- nchar(flat_pieces)
+  too_large <- piece_nchar > nchar(int_max_chr) |
+    (piece_nchar == nchar(int_max_chr) & flat_pieces > int_max_chr)
+  if (any(too_large)) {
+    offending_ids <- unique(rep(ids, each = lens[1])[too_large])
+    stop(
+      sprintf(
+        "Invalid karyotype ID(s): %s. At least one karyotype component exceeds supported integer range.",
+        paste(offending_ids, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  mat <- matrix(as.integer(flat_pieces), nrow = length(ids), byrow = TRUE)
   storage.mode(mat) <- "integer"
   rownames(mat) <- ids
   mat

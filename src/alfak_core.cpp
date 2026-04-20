@@ -44,6 +44,10 @@ double fexp_stable_cpp(double fc, double fp, double pij_value, double tt, double
   return pij_value * fp * std::expm1(tt * delta) / delta;
 }
 
+bool is_integer_valued_scalar(double x) {
+  return std::floor(x) == x;
+}
+
 } // namespace
 
 // [[Rcpp::export]]
@@ -201,9 +205,17 @@ double alfak_neighbor_objective_cpp(double fc_param,
 
   double loglik = 0.0;
   for (int t = 0; t < n_time; ++t) {
-    if (!R_finite(timepoints[t]) || !R_finite(child_obs[t]) || child_obs[t] < 0.0 ||
-        !R_finite(ntot[t]) || ntot[t] < 0.0) {
-      Rcpp::stop("Timepoints, observed counts, and totals must be finite and non-negative.");
+    if (!R_finite(timepoints[t])) {
+      Rcpp::stop("`timepoints` must contain only finite values.");
+    }
+    if (!R_finite(child_obs[t]) || child_obs[t] < 0.0 || !is_integer_valued_scalar(child_obs[t])) {
+      Rcpp::stop("`child_obs` must contain only finite non-negative integer-valued counts.");
+    }
+    if (!R_finite(ntot[t]) || ntot[t] < 0.0 || !is_integer_valued_scalar(ntot[t])) {
+      Rcpp::stop("`ntot` must contain only finite non-negative integer-valued counts.");
+    }
+    if (child_obs[t] > ntot[t]) {
+      Rcpp::stop("`child_obs` must not exceed `ntot` at any timepoint.");
     }
     double xc_est = 0.0;
     for (int p = 0; p < n_parents; ++p) {
@@ -221,7 +233,7 @@ double alfak_neighbor_objective_cpp(double fc_param,
     }
 
     xc_est = std::max(0.0, std::min(1.0, xc_est));
-    double ll = R::dbinom(child_obs[t], std::round(ntot[t]), xc_est, true);
+    double ll = R::dbinom(child_obs[t], ntot[t], xc_est, true);
     if (!R_finite(ll)) {
       ll = -1e9;
     }

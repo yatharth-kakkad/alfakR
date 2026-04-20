@@ -9,6 +9,7 @@
 #include <algorithm> // std::sample, std::min/max, std::sort
 #include <iterator>  // std::begin, std::end, std::back_inserter
 #include <cmath>     // std::round
+#include <limits>
 #include <stdexcept> // For exception catching
 // Removed: const int N_CHROMOSOME_TYPES = 22;
 
@@ -25,6 +26,35 @@ struct VectorHasher {
 
 typedef std::unordered_map<std::vector<int>, long long, VectorHasher> PopulationMap;
 typedef std::unordered_map<std::vector<int>, double, VectorHasher> FitnessMap;
+
+namespace {
+
+constexpr double ABM_MAX_EXACT_INTEGER = 9007199254740991.0;
+
+bool is_integer_valued_double(double x) {
+  return std::floor(x) == x;
+}
+
+long long validate_initial_population_count(double count_r, const std::string& k_str) {
+  if (!R_finite(count_r)) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be finite.", k_str.c_str());
+  }
+  if (count_r < 0.0) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be non-negative.", k_str.c_str());
+  }
+  if (!is_integer_valued_double(count_r)) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be integer-valued.", k_str.c_str());
+  }
+  if (count_r > ABM_MAX_EXACT_INTEGER) {
+    Rcpp::stop("`initial_population_r[['%s']]` exceeds the supported exact-integer range.", k_str.c_str());
+  }
+  if (count_r > static_cast<double>(std::numeric_limits<long long>::max())) {
+    Rcpp::stop("`initial_population_r[['%s']]` exceeds the supported long long range.", k_str.c_str());
+  }
+  return static_cast<long long>(count_r);
+}
+
+} // namespace
 
 // --- Helper Function Definitions ---
 // Parse "1.2.3..." string to vector<int>
@@ -271,8 +301,11 @@ Rcpp::List run_karyotype_abm(
   for(int i = 0; i < initial_k_names.size(); ++i) {
     std::string k_str = Rcpp::as<std::string>(initial_k_names[i]);
     double count_r = 0;
-    try { count_r = Rcpp::as<double>(initial_population_r[k_str]); }
-    catch (...) { /* Handle or skip */ continue; }
+    try {
+      count_r = Rcpp::as<double>(initial_population_r[k_str]);
+    } catch (...) {
+      Rcpp::stop("`initial_population_r[['%s']]` must be coercible to a finite numeric count.", k_str.c_str());
+    }
     
     std::vector<int> cn;
     if (n_chr_types_sim == -1) {
@@ -286,11 +319,7 @@ Rcpp::List run_karyotype_abm(
     }
     
     if(!cn.empty()) {
-      if(count_r >= 0) {
-        population[cn] = static_cast<long long>(std::round(count_r));
-      } else {
-        population[cn] = 0LL;
-      }
+      population[cn] = validate_initial_population_count(count_r, k_str);
     } 
   }
   

@@ -39,7 +39,8 @@ matching the dimension of \code{centroids}.}
 
 \item{abm_delta_t}{Duration of one ABM step.}
 
-\item{abm_max_pop}{Carrying capacity. Use \code{<= 0} for unlimited.}
+\item{abm_max_pop}{Carrying capacity. Values \verb{> 0} enable culling;
+values \verb{<= 0} mean unlimited population size.}
 
 \item{abm_culling_survival}{Fraction of cells retained when the population
 exceeds \code{abm_max_pop}.}

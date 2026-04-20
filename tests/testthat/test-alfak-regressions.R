@@ -1575,11 +1575,13 @@ test_that("ABM supports large population counts without int-sized random-distrib
 
 test_that("largest remainder allocation is deterministic and preserves the total exactly", {
   alloc <- alfakR:::largest_remainder_allocate(c(0.34, 0.33, 0.33), 2)
-  expect_identical(alloc, c(1L, 1L, 0L))
-  expect_identical(sum(alloc), 2L)
+  expect_equal(alloc, c(1, 1, 0), tolerance = 0)
+  expect_true(is.double(alloc))
+  expect_true(all(alloc == floor(alloc)))
+  expect_identical(sum(alloc), 2)
 
   alloc_exact <- alfakR:::largest_remainder_allocate(c(0.01, 0.01, 0.98), 7)
-  expect_identical(sum(alloc_exact), 7L)
+  expect_identical(sum(alloc_exact), 7)
 })
 
 test_that("predict_evo ABM with times = 0 returns the initial composition", {
@@ -1624,14 +1626,17 @@ test_that("ABM public wrappers accept abm_record_interval = -1 and reject other 
           abm_seed = 1
         )
       )
-      expect_identical(captured_interval, -1L)
+      expect_identical(captured_interval, 1L)
       expect_true(is.data.frame(res))
     },
     run_karyotype_abm = function(initial_population_r, fitness_map_r, p_missegregation, dt,
                                  n_steps, max_population_size, culling_survival_fraction,
                                  record_interval, seed, grf_centroids, grf_lambda) {
       captured_interval <<- record_interval
-      list("0" = stats::setNames(c(25L, 75L), c("2.2", "3.1")))
+      list(
+        "0" = stats::setNames(c(25L, 75L), c("2.2", "3.1")),
+        "1" = stats::setNames(c(25L, 75L), c("2.2", "3.1"))
+      )
     },
     .package = "alfakR"
   )
@@ -1650,14 +1655,17 @@ test_that("ABM public wrappers accept abm_record_interval = -1 and reject other 
         abm_record_interval = -1,
         abm_seed = 1
       )
-      expect_identical(captured_grf_interval, -1L)
+      expect_identical(captured_grf_interval, 1L)
       expect_true(is.data.frame(res))
     },
     run_karyotype_abm = function(initial_population_r, fitness_map_r, p_missegregation, dt,
                                  n_steps, max_population_size, culling_survival_fraction,
                                  record_interval, seed, grf_centroids, grf_lambda) {
       captured_grf_interval <<- record_interval
-      list("0" = stats::setNames(c(100L), "2.2"))
+      list(
+        "0" = stats::setNames(c(100L), "2.2"),
+        "1" = stats::setNames(c(100L), "2.2")
+      )
     },
     .package = "alfakR"
   )

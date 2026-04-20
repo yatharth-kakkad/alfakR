@@ -46,8 +46,9 @@ Used only if \code{prediction_type} is "ABM". Default is 1e4.}
 \item{abm_delta_t}{numeric. Duration of one time step in ABM.
 Used only if \code{prediction_type} is "ABM". Default is 0.1.}
 
-\item{abm_max_pop}{numeric. Carrying capacity for ABM (values <= 0 typically mean unlimited population growth,
-as handled by the C++ function). Used only if \code{prediction_type} is "ABM". Default is 1e7.}
+\item{abm_max_pop}{numeric. Carrying capacity for ABM. Values \verb{> 0}
+enable culling; values \verb{<= 0} mean unlimited population size.
+Used only if \code{prediction_type} is "ABM". Default is 1e7.}
 
 \item{abm_culling_survival}{numeric. Fraction of population surviving when \code{abm_max_pop}
 is exceeded (0 <= x <= 1). Used only if \code{prediction_type} is "ABM". Default is 0.1.}
