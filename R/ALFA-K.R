@@ -1395,39 +1395,30 @@ fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("joint", "marginal")
   valid_median <- is.finite(fboot_median)
   krig_stable_mean <- NULL
   krig_stable_median <- NULL
-  safe_build_stable_krig <- function(label, train_x, train_y) {
-    tryCatch(
-      build_cached_krig_fit(
-        train_x,
-        train_y,
-        give_warnings = TRUE
-      )$fit,
-      error = function(e) {
-        warning(sprintf("fitKrig: Stable %s Kriging fit failed and will be omitted: %s", label, e$message))
-        NULL
-      }
-    )
-  }
   if (sum(valid_mean) >= 2 && length(unique(fboot_mean[valid_mean])) >= 2) {
-    krig_stable_mean <- safe_build_stable_krig(
-      "mean",
+    krig_stable_mean <- fields::Krig(
       ktrain[valid_mean, , drop = FALSE],
-      fboot_mean[valid_mean]
+      fboot_mean[valid_mean],
+      cov.function = "stationary.cov",
+      cov.args = krig_covariance_args(),
+      nstep.cv = ALFAK_KRIG_NSTEP_CV,
+      give.warnings = TRUE
     )
   } else {
     warning("fitKrig: Insufficient data for stable mean Kriging fit.")
   }
   if (sum(valid_median) >= 2 && length(unique(fboot_median[valid_median])) >= 2) {
-    krig_stable_median <- safe_build_stable_krig(
-      "median",
+    krig_stable_median <- fields::Krig(
       ktrain[valid_median, , drop = FALSE],
-      fboot_median[valid_median]
+      fboot_median[valid_median],
+      cov.function = "stationary.cov",
+      cov.args = krig_covariance_args(),
+      nstep.cv = ALFAK_KRIG_NSTEP_CV,
+      give.warnings = TRUE
     )
   } else {
     warning("fitKrig: Insufficient data for stable median Kriging fit.")
   }
-
-  boot_fit_cache <- new.env(parent = emptyenv())
 
   # Use lapply directly, as cl is removed
   boot_predictions_list <- lapply(seq_len(nboot), function(b) {
@@ -1442,71 +1433,31 @@ fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("joint", "marginal")
     ktrain_boot <- ktrain[valid_boot, , drop = FALSE]
     boot_f_valid <- boot_f[valid_boot]
 
-    # Every bootstrap iteration must return the same shape so failed Kriging fits
-    # degrade to NA predictions without breaking downstream aggregation.
     if(nrow(ktrain_boot) < 2 ||
        length(boot_f_valid) < 2 ||
        nrow(unique(ktrain_boot)) < 2 ||
        length(unique(boot_f_valid)) < 2) {
-      warning("fitKrig: Insufficient or incompatible data for Kriging in bootstrap iteration. Returning NAs.")
-      return(list(
-        fit_boot = NULL,
-        preds = rep(NA_real_, nrow(ktest))
-      ))
+      stop("fitKrig: Insufficient or incompatible data for Kriging in bootstrap iteration.")
     }
 
-    tryCatch({
-      cache_key <- paste(which(valid_boot), collapse = ",")
-      if (!nzchar(cache_key)) {
-        cache_key <- "empty"
-      }
+    fit_boot <- fields::Krig(
+      ktrain_boot,
+      boot_f_valid,
+      cov.function = "stationary.cov",
+      cov.args = krig_covariance_args(),
+      nstep.cv = ALFAK_KRIG_NSTEP_CV,
+      give.warnings = TRUE
+    )
+    preds <- stats::predict(fit_boot, ktest)
 
-      if (!exists(cache_key, envir = boot_fit_cache, inherits = FALSE)) {
-        cache_entry <- build_cached_krig_fit(
-          ktrain_boot,
-          boot_f_valid,
-          kpred = ktest,
-          give_warnings = TRUE
-        )
-        assign(cache_key, cache_entry, envir = boot_fit_cache)
-        fit_boot <- cache_entry$fit
-        preds <- predict_cached_krig(fit_boot, ktest, dist_mat = cache_entry$pred_dist)
-      } else {
-        cache_entry <- get(cache_key, envir = boot_fit_cache, inherits = FALSE)
-        refit <- refit_cached_krig(
-          cache_entry,
-          y = boot_f_valid,
-          x_pred = ktest,
-          pred_dist = cache_entry$pred_dist,
-          give_warnings = TRUE
-        )
-        fit_boot <- refit$fit
-        preds <- refit$preds
-      }
-
-      list(fit_boot = fit_boot, preds = preds)
-    }, error = function(e) {
-      warning(sprintf("fitKrig: Kriging bootstrap iteration failed and will contribute NA predictions: %s", e$message))
-      list(
-        fit_boot = NULL,
-        preds = rep(NA_real_, nrow(ktest))
-      )
-    })
+    list(fit_boot = fit_boot, preds = preds)
   })
 
-  #boot_predictions <- do.call(cbind, boot_predictions_list)
   boot_predictions <- do.call(cbind, lapply(boot_predictions_list, `[[`, "preds"))
   fit_boot_list   <- lapply(boot_predictions_list, `[[`, "fit_boot")
-
-  if(is.null(boot_predictions) || ncol(boot_predictions) == 0) { # Check if boot_predictions is empty
-    pred_means <- rep(NA_real_, length(ktest_str))
-    pred_medians <- rep(NA_real_, length(ktest_str))
-    pred_sd <- rep(NA_real_, length(ktest_str))
-  } else {
-    pred_means <- apply(boot_predictions, 1, mean_or_na)
-    pred_medians <- apply(boot_predictions, 1, median_or_na)
-    pred_sd <- apply(boot_predictions, 1, sd_or_na)
-  }
+  pred_means <- apply(boot_predictions, 1, mean_or_na)
+  pred_medians <- apply(boot_predictions, 1, median_or_na)
+  pred_sd <- apply(boot_predictions, 1, sd_or_na)
 
   summary_df <- data.frame(k = ktest_str, mean = pred_means, median = pred_medians, sd = pred_sd,
                            fq = fq_ids, nn = nn_ids)

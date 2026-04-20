@@ -838,27 +838,25 @@ test_that("fitKrig joint bootstrap mode samples whole bootstrap rows by default"
 
   testthat::with_mocked_bindings(
     {
-      set.seed(123)
-      suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 3))
-      expect_true(length(seen$rows) >= 1)
-      expected_rows <- lapply(seq_len(nrow(fq_boot$final_fitness)), function(i) as.numeric(fq_boot$final_fitness[i, ]))
-      for (vals in seen$rows) {
-        expect_true(any(vapply(expected_rows, function(row_vals) identical(as.numeric(vals), as.numeric(row_vals)), logical(1))))
-      }
+      testthat::with_mocked_bindings(
+        {
+          set.seed(123)
+          suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 3))
+          expect_true(length(seen$rows) >= 1)
+          expected_rows <- lapply(seq_len(nrow(fq_boot$final_fitness)), function(i) as.numeric(fq_boot$final_fitness[i, ]))
+          for (vals in seen$rows) {
+            expect_true(any(vapply(expected_rows, function(row_vals) identical(as.numeric(vals), as.numeric(row_vals)), logical(1))))
+          }
+        },
+        predict = function(object, newdata, ...) rep(mean(object$train_f), nrow(newdata)),
+        .package = "stats"
+      )
     },
-    build_cached_krig_fit = function(ktrain, y, kpred = NULL, give_warnings = TRUE) {
-      if (!is.null(kpred)) {
-        seen$rows[[length(seen$rows) + 1L]] <- y
-      }
-      list(fit = structure(list(train_f = y, lambda = 0, eff.df = length(y)), class = "mock_krig"), pred_dist = NULL)
+    Krig = function(x, Y, ...) {
+      seen$rows[[length(seen$rows) + 1L]] <- as.numeric(Y)
+      structure(list(train_f = as.numeric(Y)), class = "mock_krig")
     },
-    refit_cached_krig = function(cache_entry, y, x_pred, pred_dist, give_warnings = TRUE) {
-      seen$rows[[length(seen$rows) + 1L]] <- y
-      list(fit = structure(list(train_f = y, lambda = 0, eff.df = length(y)), class = "mock_krig"),
-           preds = rep(mean(y), nrow(x_pred)))
-    },
-    predict_cached_krig = function(object, x, dist_mat, ...) rep(mean(object$train_f), nrow(x)),
-    .package = "alfakR"
+    .package = "fields"
   )
 })
 
@@ -906,26 +904,22 @@ test_that("cached Krig refits match fresh fields::Krig fits", {
   expect_equal(as.numeric(stats::predict(refit$fit, kpred)), fresh_preds, tolerance = 1e-8)
 })
 
-test_that("fitKrig returns structured NA bootstrap outputs when a bootstrap fit is not trainable", {
+test_that("fitKrig stops when a bootstrap fit is not trainable", {
   fq_boot <- list(
     final_fitness = matrix(1, nrow = 3, ncol = 1, dimnames = list(NULL, "2.2.2")),
     nn_fitness = matrix(numeric(0), nrow = 3, ncol = 0)
   )
 
-  res <- suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 2))
-
-  expect_identical(dim(res$posterior_samples), c(1L, 2L))
-  expect_true(all(is.na(res$posterior_samples)))
-  expect_length(res$boot_results, 2)
-  expect_true(all(vapply(res$boot_results, is.list, logical(1))))
-  expect_true(all(vapply(res$fit_boot_list, is.null, logical(1))))
-  expect_true(all(vapply(res$boot_results, function(x) all(is.na(x$preds)), logical(1))))
-  expect_true(all(is.na(res$summary_stats$mean)))
-  expect_true(all(is.na(res$summary_stats$median)))
-  expect_true(all(is.na(res$summary_stats$sd)))
+  expect_warning(
+    expect_error(
+      alfakR:::fitKrig(fq_boot, nboot = 2),
+      "Insufficient or incompatible data for Kriging in bootstrap iteration"
+    ),
+    "Insufficient data for stable"
+  )
 })
 
-test_that("fitKrig warns and returns NA summaries when stable and bootstrap Krig fits fail", {
+test_that("fitKrig stops when stable or bootstrap Krig fits fail", {
   fq_boot <- list(
     final_fitness = matrix(
       c(0.1, 0.2,
@@ -937,20 +931,16 @@ test_that("fitKrig warns and returns NA summaries when stable and bootstrap Krig
     nn_fitness = matrix(numeric(0), nrow = 2, ncol = 0)
   )
 
-  expect_warning(
-    res <- testthat::with_mocked_bindings(
+  expect_error(
+    testthat::with_mocked_bindings(
       {
         alfakR:::fitKrig(fq_boot, nboot = 2)
       },
-      build_cached_krig_fit = function(...) stop("mock Krig failure"),
-      .package = "alfakR"
+      Krig = function(...) stop("mock Krig failure"),
+      .package = "fields"
     ),
-    "Kriging fit failed|bootstrap iteration failed"
+    "mock Krig failure"
   )
-  expect_true(all(is.na(res$posterior_samples)))
-  expect_true(all(is.na(res$summary_stats$mean)))
-  expect_true(all(is.na(res$summary_stats$median)))
-  expect_true(all(is.na(res$summary_stats$sd)))
 })
 
 test_that("nn_prior = 'none' disables latent-neighbour prior contribution", {
