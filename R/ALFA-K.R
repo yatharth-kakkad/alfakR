@@ -53,10 +53,11 @@
 #' @param nn_prior_sd_floor Numeric scalar giving the minimum standard deviation
 #'   used when the empirical prior variance is zero or too small. Default is
 #'   `1e-3`.
-#' @param krig_bootstrap_mode Character; `"joint"` (default) samples one full
-#'   bootstrap row at a time when building Kriging posterior samples, preserving
-#'   within-bootstrap dependence across karyotypes. `"marginal"` retains the old
-#'   column-wise synthetic resampling behavior.
+#' @param krig_bootstrap_mode Character; `"marginal"` (default) samples
+#'   bootstrap fitness values independently by column, matching the original
+#'   ALFA-K Kriging bootstrap and cross-validation behavior. `"joint"` samples
+#'   one full bootstrap row at a time, preserving within-bootstrap dependence
+#'   across karyotypes.
 #'
 #' @return Returns the cross-validation R-squared value (`Rxv`) invisibly.
 #'   The function primarily saves its results to RDS files in the `outdir`:
@@ -126,7 +127,7 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
                   nn_prior = c("empirical", "none"),
                   nn_prior_sd = NULL,
                   nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR,
-                  krig_bootstrap_mode = c("joint", "marginal")) {
+                  krig_bootstrap_mode = c("marginal", "joint")) {
 
   # Note: library calls removed, dependencies handled by @importFrom or DESCRIPTION
 
@@ -167,8 +168,7 @@ alfak <- function(yi, outdir, passage_times = NULL, minobs = 20,
     names(Krig_stable) <- c("mean", "median")
     saveRDS(Krig_stable, file = file.path(outdir, "landscape_data.Rds"))
   }
-  xval_res <- xval(fq_boot)
-  Rxv <- extract_xval_r2r(xval_res)
+  Rxv <- xval(fq_boot, krig_bootstrap_mode = krig_bootstrap_mode)
   saveRDS(Rxv, file = file.path(outdir, "xval.Rds"))
 
   ##END HERE.
@@ -242,17 +242,9 @@ s2v <- function(s) {
 #' @keywords internal
 #' @noRd
 R2R <- function(obs, pred) {
-  valid <- is.finite(obs) & is.finite(pred)
-  obs <- obs[valid]
-  pred <- pred[valid]
-  if (length(obs) < 2) {
-    return(NA_real_)
-  }
-  denom <- sum((obs - mean(obs))^2)
-  if (!is.finite(denom) || denom <= 0) {
-    return(NA_real_)
-  }
-  1 - sum((pred - obs)^2) / denom
+  obs <- obs - mean(obs)
+  pred <- pred - mean(pred)
+  1 - sum((pred - obs)^2) / sum((obs - mean(obs))^2)
 }
 
 #' Extract the scalar R2R value from xval() output
@@ -333,7 +325,7 @@ validate_probability <- function(x, name, upper_inclusive = FALSE) {
 #' @keywords internal
 #' @noRd
 validate_krig_bootstrap_mode <- function(mode) {
-  match.arg(mode, c("joint", "marginal"))
+  match.arg(mode, c("marginal", "joint"))
 }
 
 #' Validate that every timepoint has positive sequencing depth
@@ -1349,7 +1341,7 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
 #' Fit Kriging model to fitness data (Internal function)
 #' @keywords internal
 #' @noRd
-fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("joint", "marginal")) {
+fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("marginal", "joint")) {
   validate_positive_integer(nboot, "nboot")
   krig_bootstrap_mode <- validate_krig_bootstrap_mode(krig_bootstrap_mode)
   fboot <- cbind(fq_boot$final_fitness, fq_boot$nn_fitness)
@@ -1476,7 +1468,8 @@ fitKrig <- function(fq_boot, nboot, krig_bootstrap_mode = c("joint", "marginal")
 #' Cross-validation for Kriging model (Internal function)
 #' @keywords internal
 #' @noRd
-xval <- function(fq_boot) {
+xval <- function(fq_boot, krig_bootstrap_mode = c("marginal", "joint")) {
+  krig_bootstrap_mode <- validate_krig_bootstrap_mode(krig_bootstrap_mode)
   fboot <- cbind(fq_boot$final_fitness, fq_boot$nn_fitness)
   fq_str <- colnames(fq_boot$final_fitness)
   nn_str <- colnames(fq_boot$nn_fitness) # Can be NULL
@@ -1512,11 +1505,15 @@ xval <- function(fq_boot) {
   # the long-standing heuristic while making the order-dependence explicit.
   ids <- ids[!duplicated(names(ids))] # Ensure unique names for ids
   uids <- unique(ids) # These are fold identifiers
-  b <- sample(seq_len(nrow(fboot)), 1)
-  fi <- fboot[b, ]
 
   # Use lapply directly
   tmp_list <- lapply(uids, function(id_fold) { # Renamed id to id_fold
+    fi <- if (krig_bootstrap_mode == "joint") {
+      fboot[sample(seq_len(nrow(fboot)), 1), ]
+    } else {
+      fboot_shuffled <- apply(fboot, 2, sample)
+      fboot_shuffled[1, ]
+    }
     # Original logic for train/test split based on 'ids' and current 'id_fold'
     train_indices <- !(ids == id_fold)
     test_indices <- (ids == id_fold)
@@ -1551,38 +1548,33 @@ xval <- function(fq_boot) {
     test_f <- fi[test_k_names_valid]
 
     # Filter NAs from training data, which could arise if some fi values were NA
-    valid_train_points <- is.finite(train_f)
+    valid_train_points <- !is.na(train_f)
     train_k <- train_k[valid_train_points, , drop=FALSE]
     train_f <- train_f[valid_train_points]
 
-    if(nrow(train_k) < 2 || nrow(unique(train_k)) < 2 || length(unique(train_f)) < 2) {
+    if(nrow(train_k) < 2 || nrow(unique(train_k)) < 2 || length(unique(train_f)) < 1) {
       warning(paste("Skipping xval fold for id_fold:", id_fold, "due to insufficient/non-unique training points after NA removal."))
       return(cbind(test_f = test_f, est_f = rep(NA, length(test_f))))
     }
 
-    est_f <- tryCatch({
-      fit_cache <- build_cached_krig_fit(train_k, train_f, kpred = test_k, give_warnings = TRUE)
-      fit <- fit_cache$fit
-      predict_cached_krig(fit, test_k, dist_mat = fit_cache$pred_dist)
-    }, error = function(e) {
-      warning(sprintf("xval fold fit failed for fold %s and will return NA predictions: %s", id_fold, e$message))
-      rep(NA_real_, length(test_f))
-    })
+    fit <- fields::Krig(
+      train_k,
+      train_f,
+      cov.function = "stationary.cov",
+      cov.args = krig_covariance_args(),
+      nstep.cv = ALFAK_KRIG_NSTEP_CV,
+      give.warnings = TRUE
+    )
+    est_f <- stats::predict(fit, test_k)
     cbind(test_f, est_f)
   })
 
   tmp <- do.call(rbind, tmp_list)
   tmp <- tmp[stats::complete.cases(tmp), , drop = FALSE] # Use stats::complete.cases
 
-  r2r_val <- NA_real_
   if(nrow(tmp) < 2) { # R2R needs at least 2 points
     warning("Not enough valid observations after cross-validation to compute R2R.")
-  }else{
-    r2r_val <- R2R(tmp[, 1], tmp[, 2])
+    return(NA_real_)
   }
-  return(list(
-    tmp  = tmp,
-   R2R  = r2r_val
-  ))
-  #R2R(tmp[, 1], tmp[, 2])
+  R2R(tmp[, 1], tmp[, 2])
 }

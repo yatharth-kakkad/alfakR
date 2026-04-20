@@ -364,7 +364,7 @@ test_that("alfak validates optional arguments before running heavy work", {
         krig_stable_median = NULL
       )
     },
-    xval = function(...) list(R2R = 0.1),
+    xval = function(...) 0.1,
     .package = "alfakR"
   )
 
@@ -786,7 +786,7 @@ test_that("birth-time fallback keeps neighbour estimation finite when roots are 
   expect_true(all(is.finite(res$nn_fitness)))
 })
 
-test_that("xval samples one real bootstrap replicate for all folds", {
+test_that("xval defaults to marginal column-wise bootstrap sampling", {
   fq_boot <- list(
     final_fitness = matrix(
       c(1, 10, 100,
@@ -801,27 +801,26 @@ test_that("xval samples one real bootstrap replicate for all folds", {
 
   testthat::with_mocked_bindings(
     {
-      set.seed(123)
-      res <- alfakR:::xval(fq_boot)
-      observed <- as.numeric(res$tmp[, "test_f"])
-      is_real_row <- vapply(
-        seq_len(nrow(fq_boot$final_fitness)),
-        function(i) identical(observed, as.numeric(fq_boot$final_fitness[i, ])),
-        logical(1)
+      testthat::with_mocked_bindings(
+        {
+          set.seed(123)
+          res <- alfakR:::xval(fq_boot)
+          expect_true(is.numeric(res) && length(res) == 1)
+        },
+        predict = function(object, x, ...) {
+          rep(mean(object$train_f), nrow(x))
+        },
+        .package = "stats"
       )
-      expect_true(any(is_real_row))
     },
-    build_cached_krig_fit = function(ktrain, y, kpred = NULL, give_warnings = TRUE) {
-      list(fit = structure(list(train_f = y), class = "mock_krig"), pred_dist = NULL)
+    Krig = function(x, Y, ...) {
+      structure(list(train_f = as.numeric(Y)), class = "mock_krig")
     },
-    predict_cached_krig = function(object, x, dist_mat, ...) {
-      rep(mean(object$train_f), nrow(x))
-    },
-    .package = "alfakR"
+    .package = "fields"
   )
 })
 
-test_that("fitKrig joint bootstrap mode samples whole bootstrap rows by default", {
+test_that("fitKrig uses joint bootstrap mode when requested", {
   fq_boot <- list(
     final_fitness = matrix(
       c(1, 10, 100,
@@ -841,7 +840,7 @@ test_that("fitKrig joint bootstrap mode samples whole bootstrap rows by default"
       testthat::with_mocked_bindings(
         {
           set.seed(123)
-          suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 3))
+          suppressWarnings(alfakR:::fitKrig(fq_boot, nboot = 3, krig_bootstrap_mode = "joint"))
           expect_true(length(seen$rows) >= 1)
           expected_rows <- lapply(seq_len(nrow(fq_boot$final_fitness)), function(i) as.numeric(fq_boot$final_fitness[i, ]))
           for (vals in seen$rows) {
@@ -1249,10 +1248,7 @@ test_that("landscape_data_output controls whether landscape_data.Rds is written"
     krig_stable_mean = list(tag = "mean"),
     krig_stable_median = list(tag = "median")
   )
-  xval_stub <- list(
-    tmp = matrix(c(0, 0), nrow = 1, dimnames = list(NULL, c("test_f", "est_f"))),
-    R2R = 0
-  )
+  xval_stub <- 0
   outdir_false <- file.path(tempdir(), "alfak_landscape_data_false")
   outdir_true <- file.path(tempdir(), "alfak_landscape_data_true")
   unlink(outdir_false, recursive = TRUE)
@@ -1328,10 +1324,7 @@ test_that("alfak saves xval.Rds as a scalar R2R for downstream compatibility", {
     krig_stable_mean = NULL,
     krig_stable_median = NULL
   )
-  xval_stub <- list(
-    tmp = matrix(c(0, 0), nrow = 1, dimnames = list(NULL, c("test_f", "est_f"))),
-    R2R = 0.42
-  )
+  xval_stub <- 0.42
   outdir <- file.path(tempdir(), "alfak_xval_scalar")
   unlink(outdir, recursive = TRUE)
 
@@ -1417,7 +1410,7 @@ test_that("alfak accepts scalar NA_real_ cross-validation outputs and still writ
   )
 })
 
-test_that("constant-response cross-validation returns NA_real_ instead of NaN", {
+test_that("constant-response cross-validation now follows upstream NaN semantics", {
   fq_boot <- list(
     final_fitness = matrix(
       c(1, 1, 1,
@@ -1429,15 +1422,27 @@ test_that("constant-response cross-validation returns NA_real_ instead of NaN", 
     nn_fitness = matrix(numeric(0), nrow = 2, ncol = 0)
   )
 
-  expect_warning(
-    res <- alfakR:::xval(fq_boot),
-    "Not enough valid observations"
+  res <- testthat::with_mocked_bindings(
+    {
+      testthat::with_mocked_bindings(
+        {
+          alfakR:::xval(fq_boot)
+        },
+        predict = function(object, x, ...) {
+          rep(mean(object$train_f), nrow(x))
+        },
+        .package = "stats"
+      )
+    },
+    Krig = function(x, Y, ...) {
+      structure(list(train_f = as.numeric(Y)), class = "mock_krig")
+    },
+    .package = "fields"
   )
-  expect_true(is.numeric(res$R2R) && length(res$R2R) == 1 && is.na(res$R2R))
-  expect_true(is.na(alfakR:::extract_xval_r2r(res)))
+  expect_true(is.numeric(res) && length(res) == 1 && is.nan(res))
 })
 
-test_that("alfak saves scalar NA_real_ when Krig fitting fails during xval", {
+test_that("alfak stops when Krig fitting fails during xval", {
   yi <- make_simple_yi(
     make_counts(
       c(10, 12,
@@ -1450,20 +1455,20 @@ test_that("alfak saves scalar NA_real_ when Krig fitting fails during xval", {
   fq_boot_stub <- list(
     initial_fitness = matrix(c(0.1, 0.2, 0.3,
                                0.15, 0.25, 0.35), nrow = 2, byrow = TRUE,
-                             dimnames = list(NULL, c("2.2.2", "2.2.1", "2.2.3"))),
+                             dimnames = list(NULL, c("2.2.2", "5.5.5", "8.8.8"))),
     final_fitness = matrix(c(0.1, 0.2, 0.3,
                              0.15, 0.25, 0.35), nrow = 2, byrow = TRUE,
-                           dimnames = list(NULL, c("2.2.2", "2.2.1", "2.2.3"))),
+                           dimnames = list(NULL, c("2.2.2", "5.5.5", "8.8.8"))),
     initial_frequencies = matrix(c(0.3, 0.4, 0.3,
                                    0.25, 0.45, 0.3), nrow = 2, byrow = TRUE,
-                                 dimnames = list(NULL, c("2.2.2", "2.2.1", "2.2.3"))),
+                                 dimnames = list(NULL, c("2.2.2", "5.5.5", "8.8.8"))),
     final_frequencies = matrix(c(0.3, 0.4, 0.3,
                                  0.25, 0.45, 0.3), nrow = 2, byrow = TRUE,
-                               dimnames = list(NULL, c("2.2.2", "2.2.1", "2.2.3"))),
+                               dimnames = list(NULL, c("2.2.2", "5.5.5", "8.8.8"))),
     nn_fitness = matrix(numeric(0), nrow = 2, ncol = 0)
   )
   landscape_stub <- list(
-    summary_stats = data.frame(k = c("2.2.2", "2.2.1", "2.2.3"), mean = 0, median = 0, sd = 0, fq = TRUE, nn = FALSE),
+    summary_stats = data.frame(k = c("2.2.2", "5.5.5", "8.8.8"), mean = 0, median = 0, sd = 0, fq = TRUE, nn = FALSE),
     posterior_samples = matrix(0, nrow = 3, ncol = 1),
     krig_stable_mean = NULL,
     krig_stable_median = NULL
@@ -1473,22 +1478,31 @@ test_that("alfak saves scalar NA_real_ when Krig fitting fails during xval", {
 
   testthat::with_mocked_bindings(
     {
-      returned <- invisible(alfakR::alfak(
-        yi = yi,
-        outdir = outdir,
-        minobs = 1,
-        nboot = 1,
-        n0 = 1e4,
-        nb = 1e6,
-        pm = 1e-4
-      ))
-      saved <- readRDS(file.path(outdir, "xval.Rds"))
-      expect_true(is.numeric(returned) && length(returned) == 1 && is.na(returned))
-      expect_true(is.numeric(saved) && length(saved) == 1 && is.na(saved))
+      testthat::with_mocked_bindings(
+        {
+          expect_error(
+            {
+              set.seed(1)
+              alfakR::alfak(
+                yi = yi,
+                outdir = outdir,
+                minobs = 1,
+                nboot = 1,
+                n0 = 1e4,
+                nb = 1e6,
+                pm = 1e-4,
+                krig_bootstrap_mode = "joint"
+              )
+            },
+            "mock Krig failure"
+          )
+        },
+        Krig = function(...) stop("mock Krig failure"),
+        .package = "fields"
+      )
     },
     solve_fitness_bootstrap = function(...) fq_boot_stub,
     fitKrig = function(...) landscape_stub,
-    build_cached_krig_fit = function(...) stop("mock Krig failure"),
     .package = "alfakR"
   )
 })

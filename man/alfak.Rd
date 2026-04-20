@@ -19,7 +19,7 @@ alfak(
   nn_prior = c("empirical", "none"),
   nn_prior_sd = NULL,
   nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR,
-  krig_bootstrap_mode = c("joint", "marginal")
+  krig_bootstrap_mode = c("marginal", "joint")
 )
 }
 \arguments{
@@ -85,10 +85,11 @@ empirically estimated prior standard deviation for latent-neighbour fitting.}
 used when the empirical prior variance is zero or too small. Default is
 \code{1e-3}.}
 
-\item{krig_bootstrap_mode}{Character; \code{"joint"} (default) samples one full
-bootstrap row at a time when building Kriging posterior samples, preserving
-within-bootstrap dependence across karyotypes. \code{"marginal"} retains the old
-column-wise synthetic resampling behavior.}
+\item{krig_bootstrap_mode}{Character; \code{"marginal"} (default) samples
+bootstrap fitness values independently by column, matching the original
+ALFA-K Kriging bootstrap and cross-validation behavior. \code{"joint"} samples
+one full bootstrap row at a time, preserving within-bootstrap dependence
+across karyotypes.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.
