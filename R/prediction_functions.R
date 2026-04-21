@@ -20,81 +20,7 @@
 #' @keywords internal
 #' @noRd
 parse_karyotypes <- function(kvec) {
-  if(!is.character(kvec)) stop("Input 'kvec' must be a character vector.", call. = FALSE)
-  if(length(kvec) == 0) return(matrix(integer(0), ncol = 0, nrow = 0)) # Handle empty input
-  
-  split_chr <- strsplit(kvec, "[.]", perl = TRUE)
-  
-  # Determine expected length from the first non-empty, parsable string
-  expected_len <- -1
-  first_valid_k_for_len <- NULL
-  for(i in seq_along(split_chr)){
-    if(length(split_chr[[i]]) > 0 && !all(split_chr[[i]] == "")){
-      expected_len <- length(split_chr[[i]])
-      first_valid_k_for_len <- kvec[i]
-      break
-    }
-  }
-  
-  if (expected_len == -1) { # All strings were empty or only dots
-    if(all(sapply(kvec, function(s) s == "" || grepl("^\\.*$", s)))){
-      # If all strings are truly empty or just dots, return empty matrix with 0 cols (or error)
-      warning("All karyotype strings are empty or malformed (e.g. '...'). Cannot determine chromosome count.", call. = FALSE)
-      return(matrix(integer(0), ncol = 0, nrow = length(kvec)))
-    }
-    stop("Cannot determine number of chromosome types from input 'kvec'. First element was problematic.", call. = FALSE)
-  }
-  if (expected_len == 0 && !is.null(first_valid_k_for_len) && nchar(first_valid_k_for_len)>0 ) {
-    # This case implies the first string was e.g. "." which split into 0 length useful segments.
-    stop(sprintf("First parsable karyotype string '%s' resulted in 0 chromosome types. Check format.", first_valid_k_for_len), call. = FALSE)
-  }
-  
-  
-  len_ok <- vapply(split_chr, length, integer(1)) == expected_len
-  if (!all(len_ok)) {
-    stop(sprintf("All karyotypes must have the same number of integers (expected %d, derived from first valid karyotype). Problem at input indices: %s",
-                 expected_len, paste(which(!len_ok), collapse=", ")), call. = FALSE)
-  }
-  
-  # Suppressing potential warnings from as.numeric on non-numbers, error handles it
-  num_values <- unlist(split_chr, use.names = FALSE)
-  if (length(num_values) == 0 && length(kvec) > 0) { # e.g. kvec was list("", "") and expected_len became 0
-    # This state means expected_len was probably 0 from something like kvec = c("", "")
-    # which should have been caught by earlier checks for expected_len.
-    # If expected_len is > 0, then num_values cannot be empty if all len_ok.
-    if(expected_len > 0) stop("Internal error: num_values became empty despite passing length checks.", call. = FALSE)
-    # If expected_len was 0 (e.g. kvec=c("")), create 0-col matrix
-    return(matrix(integer(0), nrow=length(kvec), ncol=0))
-  }
-  
-  
-  mat_num <- tryCatch(
-    matrix(as.numeric(num_values), ncol = expected_len, byrow = TRUE),
-    warning = function(w) {
-      if (grepl("NAs introduced by coercion", w$message, fixed = TRUE)) {
-        stop("Non-numeric values in karyotype strings led to NAs during numeric conversion.", call. = FALSE)
-      }
-      warning(w) 
-      matrix(NA_real_, ncol = expected_len, nrow = length(split_chr)) 
-    }
-  )
-  
-  if (anyNA(mat_num)) stop("Parsing failed: Non-numeric values found or NAs introduced.", call. = FALSE)
-  
-  # Check if numbers are actual integers after as.numeric
-  # Compare with rounded version. If not equal, then it wasn't an integer.
-  if (!all(mat_num == round(mat_num), na.rm = TRUE)) { # Check for non-integer numbers
-    stop("Parsing failed: Karyotype components must be whole numbers.", call. = FALSE)
-  }
-  
-  mat <- apply(mat_num, 2, as.integer) 
-  if (anyNA(mat) && !anyNA(mat_num)) { # Should not happen if previous check passes
-    stop("Internal error: Karyotype components could not be coerced to integer without NA, despite being whole numbers.", call. = FALSE)
-  }
-  
-  if (any(mat <= 0, na.rm = TRUE)) stop("Parsing failed: Karyotype components must be positive integers.", call. = FALSE)
-  storage.mode(mat) <- "integer"
-  mat
+  parse_karyotype_ids(kvec)
 }
 
 #' Convert Integer Vector Karyotype to String Tag (Internal)
@@ -104,6 +30,246 @@ parse_karyotypes <- function(kvec) {
 #' @noRd
 vec_to_tag <- function(v) {
   paste(v, collapse = ".")
+}
+
+validate_finite_numeric_vector <- function(x, name, allow_empty = FALSE) {
+  if (!is.numeric(x) || (!allow_empty && length(x) == 0) || any(!is.finite(x))) {
+    qualifier <- if (allow_empty) "a numeric vector containing only finite values" else "a non-empty numeric vector containing only finite values"
+    stop(sprintf("`%s` must be %s.", name, qualifier), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_scalar_finite_number <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x)) {
+    stop(sprintf("`%s` must be a single finite numeric value.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_probability_closed <- function(x, name) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x < 0 || x > 1) {
+    stop(sprintf("`%s` must be a single finite numeric value in [0, 1].", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_times_vector <- function(times, name = "times", non_negative = FALSE) {
+  validate_finite_numeric_vector(times, name)
+  if (is.unsorted(times, strictly = FALSE)) {
+    stop(sprintf("`%s` must be sorted in non-decreasing order.", name), call. = FALSE)
+  }
+  if (non_negative && any(times < 0)) {
+    stop(sprintf("`%s` must contain only non-negative timepoints for ABM simulation.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+validate_integerish_scalar <- function(x, name, min_value = NULL, allow_zero = FALSE) {
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x != floor(x)) {
+    stop(sprintf("`%s` must be a single finite integer-like value.", name), call. = FALSE)
+  }
+  if (!is.null(min_value)) {
+    if (allow_zero) {
+      if (x < min_value) {
+        stop(sprintf("`%s` must be >= %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+      }
+    } else if (x <= min_value) {
+      stop(sprintf("`%s` must be > %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+    }
+  }
+  invisible(NULL)
+}
+
+validate_cpp_integerish_scalar <- function(x, name, min_value = NULL, allow_negative_one = FALSE,
+                                           max_value = ALFAK_MAX_EXACT_INTEGER, target = c("long long", "int")) {
+  target <- match.arg(target)
+  if (!is.numeric(x) || length(x) != 1 || !is.finite(x) || x != floor(x)) {
+    stop(sprintf("`%s` must be a single finite integer-valued scalar.", name), call. = FALSE)
+  }
+  if (abs(x) > max_value) {
+    stop(sprintf("`%s` must be exactly representable in R and no larger than %.0f in magnitude.", name, max_value), call. = FALSE)
+  }
+  if (!is.null(min_value) && x < min_value && !(allow_negative_one && x == -1)) {
+    stop(sprintf("`%s` must be >= %s.", name, format(min_value, trim = TRUE)), call. = FALSE)
+  }
+  if (target == "int" && (x < -.Machine$integer.max - 1 || x > .Machine$integer.max)) {
+    stop(sprintf("`%s` exceeds the supported C++ int range.", name), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+largest_remainder_allocate <- function(prob, total_size) {
+  validate_finite_numeric_vector(prob, "prob")
+  original_names <- names(prob)
+  if (any(prob < 0)) {
+    stop("`prob` must contain only non-negative values.", call. = FALSE)
+  }
+  validate_cpp_integerish_scalar(total_size, "total_size", min_value = 0, target = "long long")
+  if (!length(prob)) {
+    out <- numeric(0)
+    if (!is.null(original_names)) {
+      names(out) <- original_names
+    }
+    return(out)
+  }
+  if (sum(prob) <= 0) {
+    stop("`prob` must sum to a positive value.", call. = FALSE)
+  }
+  prob <- prob / sum(prob)
+  raw <- prob * total_size
+  counts <- floor(raw)
+  remaining <- total_size - sum(counts)
+  if (!is.finite(remaining) || remaining < 0 || remaining != floor(remaining) || remaining > length(prob)) {
+    stop("Internal error: largest remainder allocation produced an invalid remainder.", call. = FALSE)
+  }
+  if (remaining > 0) {
+    fractional <- raw - counts
+    order_idx <- order(-fractional, seq_along(fractional))
+    counts[order_idx[seq_len(remaining)]] <- counts[order_idx[seq_len(remaining)]] + 1
+  }
+  if (length(counts) != length(prob) || any(!is.finite(counts)) || any(counts < 0) ||
+      any(counts != floor(counts)) || sum(counts) != total_size) {
+    stop("Internal error: largest remainder allocation produced invalid integer-valued counts.", call. = FALSE)
+  }
+  if (!is.null(original_names)) {
+    names(counts) <- original_names
+  }
+  counts
+}
+
+abm_times_to_steps <- function(times, abm_delta_t, name = "times") {
+  if (!length(times)) {
+    return(integer(0))
+  }
+  raw_steps <- times / abm_delta_t
+  rounded_steps <- round(raw_steps)
+  tol <- 100 * .Machine$double.eps * pmax(1, abs(raw_steps))
+  if (any(abs(raw_steps - rounded_steps) > tol)) {
+    stop(sprintf("`%s` must align exactly with the ABM step grid defined by `abm_delta_t`.", name), call. = FALSE)
+  }
+  if (any(rounded_steps < 0)) {
+    stop(sprintf("`%s` must contain only non-negative ABM step indices.", name), call. = FALSE)
+  }
+  if (any(rounded_steps > .Machine$integer.max)) {
+    stop("Computed ABM step index exceeds the supported integer range.", call. = FALSE)
+  }
+  as.integer(rounded_steps)
+}
+
+abm_steps_covered_by_record_interval <- function(requested_steps, n_steps, record_interval) {
+  if (!length(requested_steps)) {
+    return(TRUE)
+  }
+  if (record_interval < 0L) {
+    return(all(requested_steps == 0L))
+  }
+  all(requested_steps == 0L | requested_steps == n_steps | (requested_steps %% as.integer(record_interval) == 0L))
+}
+
+resolve_abm_record_interval <- function(requested_steps, n_steps, record_interval) {
+  if (abm_steps_covered_by_record_interval(requested_steps, n_steps, record_interval)) {
+    return(as.integer(record_interval))
+  }
+  1L
+}
+
+prepare_abm_initial_population <- function(x0, abm_pop_size) {
+  initial_counts <- largest_remainder_allocate(x0, abm_pop_size)
+  if (length(initial_counts) != length(x0) || any(!is.finite(initial_counts)) || any(initial_counts < 0) ||
+      any(initial_counts != floor(initial_counts)) || sum(initial_counts) != abm_pop_size) {
+    stop("Internal error: ABM initial population allocation produced invalid counts.", call. = FALSE)
+  }
+  initial_pop_list <- as.list(initial_counts)[initial_counts > 0]
+  if (!length(initial_pop_list)) {
+    stop("Initial population for ABM is zero after filtering zero counts.", call. = FALSE)
+  }
+  initial_pop_list
+}
+
+abm_cpp_results_to_wide <- function(cpp_results, requested_steps, requested_times, known_karyotypes,
+                                    normalize_counts = TRUE, source_label = "ABM") {
+  out <- data.frame(time = requested_times, stringsAsFactors = FALSE)
+  if (!length(cpp_results)) {
+    for (kt_name in known_karyotypes) {
+      out[[kt_name]] <- numeric(length(requested_times))
+    }
+    return(out)
+  }
+
+  result_steps <- names(cpp_results)
+  if (is.null(result_steps) || any(!nzchar(result_steps))) {
+    stop(sprintf("%s simulation returned unnamed step records.", source_label), call. = FALSE)
+  }
+  missing_steps <- setdiff(unique(as.character(requested_steps)), result_steps)
+  if (length(missing_steps) > 0) {
+    stop(
+      sprintf("%s simulation did not record requested ABM step(s): %s", source_label, paste(missing_steps, collapse = ", ")),
+      call. = FALSE
+    )
+  }
+
+  results_by_step <- vector("list", length(cpp_results))
+  names(results_by_step) <- result_steps
+  extra_karyotypes <- character(0)
+
+  for (step_name in result_steps) {
+    counts_vec <- cpp_results[[step_name]]
+    if (length(counts_vec) == 0 || sum(counts_vec, na.rm = TRUE) <= 0) {
+      results_by_step[[step_name]] <- numeric(0)
+      next
+    }
+    values <- as.numeric(counts_vec)
+    karyo_names <- names(counts_vec)
+    if (is.null(karyo_names) && length(values) > 0) {
+      warning(sprintf("%s step %s returned unnamed counts; synthesizing V1, V2, ... labels.", source_label, step_name), call. = FALSE)
+      karyo_names <- paste0("V", seq_along(values))
+    }
+    if (normalize_counts) {
+      values <- values / sum(values)
+    }
+    names(values) <- karyo_names
+    results_by_step[[step_name]] <- values
+    extra_karyotypes <- c(extra_karyotypes, karyo_names)
+  }
+
+  all_karyotypes <- c(known_karyotypes, setdiff(unique(extra_karyotypes), known_karyotypes))
+  for (kt_name in all_karyotypes) {
+    out[[kt_name]] <- numeric(length(requested_times))
+  }
+
+  for (idx in seq_along(requested_steps)) {
+    values <- results_by_step[[as.character(requested_steps[idx])]]
+    if (length(values)) {
+      out[idx, names(values)] <- unname(values)
+    }
+  }
+
+  out
+}
+
+validate_named_frequency_vector <- function(x, expected_names = NULL, expected_dim = NULL, name = "x0") {
+  validate_finite_numeric_vector(x, name)
+  if (is.null(names(x)) || any(!nzchar(names(x)))) {
+    stop(sprintf("`%s` must be a named numeric vector.", name), call. = FALSE)
+  }
+  if (anyDuplicated(names(x))) {
+    stop(sprintf("`%s` must not contain duplicate names.", name), call. = FALSE)
+  }
+  if (any(x < 0)) {
+    stop(sprintf("`%s` must contain only non-negative values.", name), call. = FALSE)
+  }
+  if (abs(sum(x) - 1) > 1e-6) {
+    stop(sprintf("`%s` must sum to 1 (within tolerance).", name), call. = FALSE)
+  }
+  parsed <- parse_karyotype_ids(names(x))
+  if (!is.null(expected_dim) && ncol(parsed) != expected_dim) {
+    stop(sprintf("Karyotype names in `%s` do not have %d chromosome counts.", name, expected_dim), call. = FALSE)
+  }
+  if (!is.null(expected_names) && !setequal(names(x), expected_names)) {
+    stop(sprintf("Names of `%s` must exactly match the karyotypes in `lscape$k`.", name), call. = FALSE)
+  }
+  invisible(parsed)
 }
 
 # -------------------------------------------------------------
@@ -125,6 +291,11 @@ vec_to_tag <- function(v) {
 #' }
 #' 
 build_W_rcpp <- function(karyotype_strings, p,Nmax=Inf) {
+  parse_karyotype_ids(karyotype_strings)
+  validate_probability_closed(p, "p")
+  if (!(is.infinite(Nmax) || (is.numeric(Nmax) && length(Nmax) == 1 && is.finite(Nmax) && Nmax >= 0))) {
+    stop("`Nmax` must be Inf or a non-negative finite number.", call. = FALSE)
+  }
   w_structure <- tryCatch(
     get_A_inputs(karyotype_strings,p,Nmax), # C++ function
     error = function(e) stop("Error in get_A_inputs(C++ call): ", e$message, call. = FALSE)
@@ -202,13 +373,14 @@ run_ode_simulation <- function(lscape, p, times, x0, ode_method,Nmax=Inf) {
 #' @param x0 Named numeric vector of initial frequencies (must sum to 1).
 #' @param abm_pop_size Initial total population size.
 #' @param abm_delta_t Time duration of a single ABM step.
-#' @param abm_max_pop Maximum population size (carrying capacity), <= 0 for unlimited.
+#' @param abm_max_pop Maximum population size (carrying capacity). Values
+#'   `> 0` enable culling; values `<= 0` mean unlimited population size.
 #' @param abm_culling_survival Survival fraction if max_pop is exceeded.
-#' @param abm_record_interval Record state every N steps.
+#' @param abm_record_interval Record state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #' @param abm_seed RNG seed (-1 for random).
 #' @return Data frame with 'time' column and frequency columns for each karyotype.
 #' @importFrom stats setNames
-#' @importFrom tidyr pivot_wider
 #' @keywords internal
 #' @noRd
 run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
@@ -216,23 +388,49 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
                                abm_record_interval, abm_seed) {
   
   message("Setting up ABM simulation...")
-  
-  initial_counts_raw <- x0 * abm_pop_size
-  initial_counts <- round(initial_counts_raw) 
-  if(any(initial_counts < 0)) {
-    warning("Negative counts generated for ABM initial population after rounding; treating as 0.", call.=FALSE)
-    initial_counts[initial_counts < 0] <- 0 
+  if (!is.data.frame(lscape) || !all(c("k", "mean") %in% names(lscape))) {
+    stop("'lscape' must be a data.frame with columns 'k' and 'mean'.", call. = FALSE)
   }
-  initial_pop_list_unfiltered <- as.list(initial_counts)
-  initial_pop_list <- initial_pop_list_unfiltered[initial_counts > 0] 
-  
-  if(length(initial_pop_list) == 0) stop("Initial population for ABM is zero after filtering zero counts.", call. = FALSE)
+  if (!is.character(lscape$k) || length(lscape$k) == 0) {
+    stop("'lscape$k' must be a non-empty character vector.", call. = FALSE)
+  }
+  if (anyDuplicated(lscape$k)) {
+    stop("'lscape$k' must contain unique karyotype strings.", call. = FALSE)
+  }
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
+  if (length(lscape$mean) != length(lscape$k)) {
+    stop("'lscape$mean' must have the same length as 'lscape$k'.", call. = FALSE)
+  }
+  parse_karyotypes(lscape$k)
+  validate_probability_closed(p, "p")
+  validate_times_vector(times, non_negative = TRUE)
+  validate_named_frequency_vector(x0, expected_names = lscape$k)
+  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+  validate_positive_finite(abm_delta_t, "abm_delta_t")
+  validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", target = "long long")
+  validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                 min_value = 1, allow_negative_one = TRUE, target = "int")
+  if (abm_record_interval == 0) {
+    stop("`abm_record_interval` must not be zero.", call. = FALSE)
+  }
+  validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
+
+  initial_pop_list <- prepare_abm_initial_population(x0, abm_pop_size)
   
   fitness_map_list <- stats::setNames(as.list(lscape$mean), lscape$k)
   
-  max_time <- max(times, na.rm = TRUE) 
-  num_steps <- ceiling(max_time / abm_delta_t)
-  if (num_steps <= 0) stop("Number of ABM steps is non-positive (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  requested_steps <- abm_times_to_steps(times, abm_delta_t)
+  max_time <- max(times, na.rm = TRUE)
+  num_steps <- max(requested_steps)
+  if (!is.finite(num_steps) || num_steps < 0) stop("Number of ABM steps is invalid (max_time / abm_delta_t). Check 'times' and 'abm_delta_t'.", call. = FALSE)
+  if (num_steps > 1e7) {
+    warning("ABM simulation requires a very large number of steps; check `times` and `abm_delta_t`.", call. = FALSE)
+  }
+  if (num_steps > .Machine$integer.max) {
+    stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
+  }
+  effective_record_interval <- resolve_abm_record_interval(requested_steps, num_steps, abm_record_interval)
   
   message(sprintf("Starting ABM simulation for %d steps (up to time %.2f)...", num_steps, max_time))
   sim_results_list_cpp <- tryCatch(
@@ -244,7 +442,7 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
       n_steps              = as.integer(num_steps),
       max_population_size  = abm_max_pop,
       culling_survival_fraction = abm_culling_survival,
-      record_interval      = as.integer(abm_record_interval),
+      record_interval      = effective_record_interval,
       seed                 = as.integer(abm_seed),
       grf_centroids        = matrix(numeric(0), nrow = 0, ncol = 0), # CORRECT R equivalent
       grf_lambda           = NA_real_                                # R equivalent
@@ -259,75 +457,23 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
   message("Processing ABM results...")
   if (length(sim_results_list_cpp) == 0) {
     warning("ABM simulation returned no results from C++.", call. = FALSE)
-    empty_df_res <- data.frame(time = numeric(0))
-    ktypes_all <- names(x0)
-    for (kt_name in ktypes_all) empty_df_res[[kt_name]] <- numeric(0)
-    return(empty_df_res)
+    return(abm_cpp_results_to_wide(
+      cpp_results = list(),
+      requested_steps = requested_steps,
+      requested_times = times,
+      known_karyotypes = names(x0),
+      normalize_counts = TRUE,
+      source_label = "ABM"
+    ))
   }
-  
-  # Convert list of named vectors (from C++) to a long data frame
-  results_df_list <- lapply(names(sim_results_list_cpp), function(step_name_str) {
-    counts_vec <- sim_results_list_cpp[[step_name_str]]
-    step_num <- as.integer(step_name_str) 
-    time_point <- step_num * abm_delta_t
-    
-    if (length(counts_vec) > 0 && sum(counts_vec, na.rm=TRUE) > 0) { 
-      total_count <- sum(counts_vec, na.rm=TRUE)
-      freq_vec <- counts_vec / total_count
-      karyo_names <- names(freq_vec)
-      if(is.null(karyo_names) && length(freq_vec) > 0) { # Should have names from C++
-        warning(paste0("Step ", step_name_str, ": ABM counts vector missing names. Using V1, V2..."), call.=FALSE)
-        karyo_names <- paste0("V", seq_along(freq_vec))
-      }
-      
-      data.frame(time = time_point, 
-                 Karyotype = karyo_names, 
-                 Frequency = as.numeric(freq_vec),
-                 stringsAsFactors = FALSE)
-    } else { 
-      data.frame(time = time_point, Karyotype = character(0), Frequency = numeric(0),
-                 stringsAsFactors = FALSE)
-    }
-  })
-  results_long_df <- do.call(rbind, results_df_list)
-  
-  all_karyotypes_initial <- names(x0) 
-  
-  if (nrow(results_long_df) > 0 && "Karyotype" %in% names(results_long_df)) { # Check Karyotype col exists
-    results_wide_df <- tidyr::pivot_wider(results_long_df,
-                                          names_from = .data$Karyotype, 
-                                          values_from = .data$Frequency,
-                                          values_fill = 0.0) 
-    
-    missing_cols <- setdiff(all_karyotypes_initial, names(results_wide_df))
-    if (length(missing_cols) > 0) {
-      for(col_name in missing_cols) results_wide_df[[col_name]] <- 0.0
-    }
-    
-    # Ensure "time" column is first, then others
-    time_col_present <- "time" %in% names(results_wide_df)
-    if(!time_col_present && nrow(results_wide_df) > 0) stop("Internal error: 'time' column lost during pivot_wider in ABM processing.", call. = FALSE)
-    
-    # Select and order columns
-    final_col_order <- intersect(c("time", all_karyotypes_initial), names(results_wide_df))
-    # Add back any karyotypes from all_karyotypes_initial that might have been completely absent in results
-    # (already handled by missing_cols loop mostly)
-    
-    results_final_df <- results_wide_df[, final_col_order, drop = FALSE]
-    
-  } else {
-    message("ABM processing resulted in empty data frame or no 'Karyotype' column; returning structure based on initial times and karyotypes.")
-    results_final_df <- data.frame(time = if(length(times) > 0) unique(times) else numeric(0))
-    for (kt_name in all_karyotypes_initial) results_final_df[[kt_name]] <- 0.0
-    if (nrow(results_final_df) == 0 && length(times) == 0) { # Truly empty case
-      # Construct an empty df with correct column names if all_karyotypes_initial is also empty
-      col_names_for_empty <- "time"
-      if(length(all_karyotypes_initial) > 0) col_names_for_empty <- c("time", all_karyotypes_initial)
-      results_final_df <- data.frame(matrix(ncol = length(col_names_for_empty), nrow = 0,
-                                            dimnames=list(NULL, col_names_for_empty)))
-    }
-  }
-  results_final_df
+  abm_cpp_results_to_wide(
+    cpp_results = sim_results_list_cpp,
+    requested_steps = requested_steps,
+    requested_times = times,
+    known_karyotypes = names(x0),
+    normalize_counts = TRUE,
+    source_label = "ABM"
+  )
 }
 # -------------------------------------------------------------
 # Master Prediction Function
@@ -353,11 +499,13 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
 #'   Used only if `prediction_type` is "ABM". Default is 1e4.
 #' @param abm_delta_t numeric. Duration of one time step in ABM.
 #'   Used only if `prediction_type` is "ABM". Default is 0.1.
-#' @param abm_max_pop numeric. Carrying capacity for ABM (values <= 0 typically mean unlimited population growth,
-#'   as handled by the C++ function). Used only if `prediction_type` is "ABM". Default is 1e7.
+#' @param abm_max_pop numeric. Carrying capacity for ABM. Values `> 0`
+#'   enable culling; values `<= 0` mean unlimited population size.
+#'   Used only if `prediction_type` is "ABM". Default is 1e7.
 #' @param abm_culling_survival numeric. Fraction of population surviving when `abm_max_pop`
 #'   is exceeded (0 <= x <= 1). Used only if `prediction_type` is "ABM". Default is 0.1.
-#' @param abm_record_interval integer. Record ABM state every N steps.
+#' @param abm_record_interval integer. Record ABM state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #'   Used only if `prediction_type` is "ABM". Default is 10.
 #' @param Nmax Optional limit to the number of missegregations allowable (ODE model only).
 #' @param abm_seed integer. Seed for ABM's random number generator (-1 for a random seed based on device,
@@ -427,66 +575,38 @@ predict_evo <- function(lscape, p, times, x0, prediction_type = "ODE",
   if (anyDuplicated(lscape$k)) {
     stop("'lscape$k' contains duplicate karyotype strings. Please provide unique karyotypes in lscape.", call. = FALSE)
   }
-  if (!is.numeric(lscape$mean) || length(lscape$mean) != length(lscape$k)) {
-    stop("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE)
-  }
-  if (!is.numeric(p) || length(p) != 1 || p < 0 || p > 1) {
-    stop("'p' (missegregation probability) must be a single numeric value between 0 and 1.", call. = FALSE)
-  }
-  if (!is.numeric(times) || anyNA(times) || is.unsorted(times, strictly = FALSE)) {
-    stop("'times' must be a sorted numeric vector without NAs.", call. = FALSE)
-  }
-  if (length(times) == 0) stop("'times' must not be empty.", call. = FALSE)
-  
-  if (!is.numeric(x0) || is.null(names(x0))) {
-    stop("'x0' (initial frequencies) must be a named numeric vector.", call. = FALSE)
-  }
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
   if (length(x0) != nrow(lscape)) {
     stop("Length of 'x0' must match the number of rows (karyotypes) in 'lscape'.", call. = FALSE)
   }
-  if(!setequal(names(x0), lscape$k)) {
-    stop("Names of 'x0' must exactly match all unique karyotypes in 'lscape$k'. Order does not matter initially, but all names must be present in both.", call. = FALSE)
-  }
+  validate_probability_closed(p, "p")
+  validate_times_vector(times)
+  validate_named_frequency_vector(x0, expected_names = lscape$k)
+  parse_karyotypes(lscape$k)
   # Reorder x0 to match lscape$k order for consistency downstream
   x0 <- x0[lscape$k] 
   if(anyNA(x0)){ # Check after reordering if any names in lscape$k were not in original x0 names
     stop("Mismatch between names(x0) and lscape$k led to NAs after reordering x0. Ensure all lscape$k are in names(x0).", call. = FALSE)
   }
   
-  if (abs(sum(x0) - 1.0) > 1e-6) stop("'x0' frequencies must sum to 1 (within tolerance).", call. = FALSE)
-  if (any(x0 < -1e-9)) stop("'x0' must contain non-negative frequencies (allowing for small numerical errors near zero).", call. = FALSE) # Allow tiny negatives
-  x0[x0<0] <- 0 # Correct tiny negatives before use
-  
   if (!(prediction_type %in% c("ODE", "ABM"))) stop("'prediction_type' must be either 'ODE' or 'ABM'.", call. = FALSE)
-  
-  # Further validation (moved from internal functions to be user-facing checks)
-  # This implicitly checks karyotype string format and consistency.
-  # If parse_karyotypes fails, it will stop here.
-  parsed_k_for_validation <- parse_karyotypes(lscape$k)
   
   result_df <- NULL 
   if (prediction_type == "ODE") {
     result_df <- run_ode_simulation(lscape = lscape, p = p, times = times, x0 = x0, ode_method = ode_method,Nmax=Nmax)
   } else if (prediction_type == "ABM") {
     # ABM specific parameter validation
-    if (!is.numeric(abm_pop_size) || length(abm_pop_size) != 1 || abm_pop_size <= 0 || floor(abm_pop_size) != abm_pop_size) {
-      stop("'abm_pop_size' must be a single positive integer.", call. = FALSE)
+    validate_times_vector(times, non_negative = TRUE)
+    validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+    validate_positive_finite(abm_delta_t, "abm_delta_t")
+    validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", target = "long long")
+    validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+    validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                   min_value = 1, allow_negative_one = TRUE, target = "int")
+    if (abm_record_interval == 0) {
+      stop("'abm_record_interval' must not be zero.", call. = FALSE)
     }
-    if (!is.numeric(abm_delta_t) || length(abm_delta_t) != 1 || abm_delta_t <= 0) {
-      stop("'abm_delta_t' must be a single positive number.", call. = FALSE)
-    }
-    if (!is.numeric(abm_max_pop) || length(abm_max_pop) != 1) {
-      stop("'abm_max_pop' must be a single numeric value.", call. = FALSE)
-    }
-    if (!is.numeric(abm_culling_survival) || length(abm_culling_survival) != 1 || abm_culling_survival < 0 || abm_culling_survival > 1) {
-      stop("'abm_culling_survival' must be a single number between 0 and 1.", call. = FALSE)
-    }
-    if (!is.numeric(abm_record_interval) || length(abm_record_interval) != 1 || abm_record_interval <= 0 || floor(abm_record_interval) != abm_record_interval) {
-      stop("'abm_record_interval' must be a single positive integer.", call. = FALSE)
-    }
-    if (!is.numeric(abm_seed) || length(abm_seed) != 1 || floor(abm_seed) != abm_seed ) { # Ensure abm_seed is integer-like
-      stop("'abm_seed' must be a single integer value.", call. = FALSE)
-    }
+    validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
     
     result_df <- run_abm_simulation(lscape = lscape, p = p, times = times, x0 = x0,
                                     abm_pop_size = abm_pop_size, abm_delta_t = abm_delta_t,
@@ -548,20 +668,19 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
   
   # --- Input Validation ---
   if (!is.data.frame(lscape) || !all(c("k", "mean") %in% names(lscape))) {
-    warning("Invalid 'lscape' input: must be a data.frame with 'k' and 'mean' columns.", call. = FALSE); return(NULL)
+    stop("Invalid 'lscape' input: must be a data.frame with 'k' and 'mean' columns.", call. = FALSE)
   }
   if (!is.character(lscape$k) || length(lscape$k) == 0) {
-    warning("'lscape$k' must be a non-empty character vector.", call. = FALSE); return(NULL)
+    stop("'lscape$k' must be a non-empty character vector.", call. = FALSE)
   }
   if (anyDuplicated(lscape$k)) { # Check for duplicates that would cause issues
     stop("'lscape$k' contains duplicate karyotype strings. Steady state calculation requires unique karyotypes in lscape.", call. = FALSE)
   }
-  if (!is.numeric(lscape$mean) || length(lscape$mean) != length(lscape$k)) {
-    warning("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE); return(NULL)
+  validate_finite_numeric_vector(lscape$mean, "lscape$mean")
+  if (length(lscape$mean) != length(lscape$k)) {
+    stop("'lscape$mean' must be numeric and have the same length as 'lscape$k'.", call. = FALSE)
   }
-  if (!is.numeric(p) || length(p) != 1 || p < 0 || p > 1) {
-    warning("'p' (missegregation probability) must be a single numeric value between 0 and 1.", call. = FALSE); return(NULL)
-  }
+  validate_probability_closed(p, "p")
   
   # Validate karyotype strings before passing to C++
   # If parse_karyotypes fails, it will stop.
@@ -592,21 +711,30 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
   }
   
   M_matrix <- W*r_values
+  # chrmod_rel() evolves row vectors via x %*% M_matrix, so the steady state is
+  # the dominant left eigenvector of M_matrix, equivalently the dominant right
+  # eigenvector of t(M_matrix).
+  M_eigs <- Matrix::t(M_matrix)
   
   eig_result <- NULL
-  try_LR_on_LM_fail <- TRUE # Control if we try LR after LM
-  
-  eig_result <- tryCatch(RSpectra::eigs(M_matrix, k = 1, which = "LM"), error = function(e_lm) {
-    warning("RSpectra::eigs with 'LM' failed: ", e_lm$message, ". ", 
-            if(try_LR_on_LM_fail) "Trying 'LR'." else "Not trying 'LR'.", call. = FALSE)
-    if(try_LR_on_LM_fail){
-      return(tryCatch(RSpectra::eigs(M_matrix, k = 1, which = "LR"), error = function(e_lr) {
-        stop(sprintf("RSpectra::eigs also failed with 'LR': %s", e_lr$message), call. = FALSE)
-      }))
-    } else {
-      stop(sprintf("RSpectra::eigs with 'LM' failed: %s. Aborting.", e_lm$message), call. = FALSE)
-    }
-  })
+  if (nrow(M_eigs) < 3) {
+    dense_eigs <- eigen(as.matrix(M_eigs))
+    dominant_idx <- which.max(Re(dense_eigs$values))
+    eig_result <- list(
+      values = dense_eigs$values[dominant_idx],
+      vectors = dense_eigs$vectors[, dominant_idx, drop = FALSE]
+    )
+  } else {
+    eig_result <- tryCatch(RSpectra::eigs(M_eigs, k = 1, which = "LR"), error = function(e_lr) {
+      warning("RSpectra::eigs with 'LR' failed; falling back to dense eigen decomposition: ", e_lr$message, call. = FALSE)
+      dense_eigs <- eigen(as.matrix(M_eigs))
+      dominant_idx <- which.max(Re(dense_eigs$values))
+      list(
+        values = dense_eigs$values[dominant_idx],
+        vectors = dense_eigs$vectors[, dominant_idx, drop = FALSE]
+      )
+    })
+  }
   
   if (is.null(eig_result) || length(eig_result$vectors) == 0) { # Check vectors specifically
     stop("Eigen decomposition (RSpectra::eigs) failed to return eigenvectors.", call. = FALSE)
@@ -657,11 +785,12 @@ find_steady_state <- function(lscape, p, Nmax=Inf) {
 #'   matching the dimension of \code{centroids}.
 #' @param abm_pop_size Initial total population size.
 #' @param abm_delta_t Duration of one ABM step.
-#' @param abm_max_pop Carrying capacity. Use \code{<= 0} for unlimited.
+#' @param abm_max_pop Carrying capacity. Values \code{> 0} enable culling;
+#'   values \code{<= 0} mean unlimited population size.
 #' @param abm_culling_survival Fraction of cells retained when the population
 #'   exceeds \code{abm_max_pop}.
-#' @param abm_record_interval Record population state every N steps. If a negative value 
-#' is provided, then population is recorded every passage.
+#' @param abm_record_interval Record population state every N steps when `>= 1`.
+#'   Use `-1` to record only at culling events. `0` is invalid.
 #' @param abm_seed RNG seed.  Use \code{-1} for a random seed.
 #' @param normalize_freq Should ABM counts be normalized to frequencies?
 #' @return A **wide data‑frame**: first column \code{time}, remaining columns
@@ -697,26 +826,39 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   ## -- validation (same as internal draft, trimmed for brevity) -------------
   if(!is.matrix(centroids) || !is.numeric(centroids) || nrow(centroids) == 0)
     stop("'centroids' must be a non‑empty numeric matrix.", call. = FALSE)
-  if(!is.numeric(lambda) || length(lambda) != 1 || lambda <= 0)
-    stop("'lambda' must be a single positive numeric value.", call. = FALSE)
+  if (any(!is.finite(centroids))) {
+    stop("'centroids' must contain only finite numeric values.", call. = FALSE)
+  }
+  validate_positive_finite(lambda, "lambda")
+  validate_probability_closed(p, "p")
+  validate_times_vector(times, non_negative = TRUE)
+  validate_named_frequency_vector(x0, expected_dim = ncol(centroids))
+  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+  validate_positive_finite(abm_delta_t, "abm_delta_t")
+  validate_cpp_integerish_scalar(abm_max_pop, "abm_max_pop", target = "long long")
+  validate_probability_closed(abm_culling_survival, "abm_culling_survival")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval",
+                                 min_value = 1, allow_negative_one = TRUE, target = "int")
+  if (abm_record_interval == 0) {
+    stop("'abm_record_interval' must not be zero.", call. = FALSE)
+  }
+  validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
+  validate_scalar_logical(normalize_freq, "normalize_freq")
   K <- ncol(centroids)
   
-  parse_len <- function(s) length(strsplit(s, "\\.")[[1]])
-  bad <- names(x0)[vapply(names(x0), parse_len, 0L) != K]
-  if(length(bad))
-    stop("Karyotype names ", paste(bad, collapse = ", "),
-         " do not have ", K, " chromosome counts.", call. = FALSE)
-  if(abs(sum(x0) - 1) > 1e-6)
-    stop("'x0' must sum to 1.", call. = FALSE)
-  
   ## -- initial population ----------------------------------------------------
-  init_counts <- round(x0 * abm_pop_size)
-  init_counts[init_counts < 0] <- 0
-  init_list   <- as.list(init_counts)[init_counts > 0]  
-  if(!length(init_list)) stop("Initial population is zero.", call. = FALSE)
+  init_list <- prepare_abm_initial_population(x0, abm_pop_size)
   
   ## -- run C++ ---------------------------------------------------------------
-  steps <- ceiling(max(times) / abm_delta_t)
+  requested_steps <- abm_times_to_steps(times, abm_delta_t)
+  steps <- max(requested_steps)
+  if (steps > 1e7) {
+    warning("ABM simulation requires a very large number of steps; check `times` and `abm_delta_t`.", call. = FALSE)
+  }
+  if (!is.finite(steps) || steps < 0 || steps > .Machine$integer.max) {
+    stop("Computed number of ABM steps exceeds the supported integer range.", call. = FALSE)
+  }
+  effective_record_interval <- resolve_abm_record_interval(requested_steps, steps, abm_record_interval)
   elapsed <- system.time({
     cpp_res <- run_karyotype_abm(
       initial_population_r      = init_list,
@@ -726,7 +868,7 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
       n_steps                   = as.integer(steps),
       max_population_size       = abm_max_pop,
       culling_survival_fraction = abm_culling_survival,
-      record_interval           = as.integer(abm_record_interval),
+      record_interval           = effective_record_interval,
       seed                      = as.integer(abm_seed),
       grf_centroids             = centroids,
       grf_lambda                = lambda
@@ -737,32 +879,23 @@ run_abm_simulation_grf <- function(centroids, lambda, p, times, x0,
   ## -- convert to wide data‑frame (unchanged) --------------------------------
   if(!length(cpp_res)) {
     warning("C++ returned no results.")
-    out <- data.frame(time = numeric(0)); for(nm in names(x0)) out[[nm]] <- numeric(0)
-    return(out)
+    return(abm_cpp_results_to_wide(
+      cpp_results = list(),
+      requested_steps = requested_steps,
+      requested_times = times,
+      known_karyotypes = names(x0),
+      normalize_counts = normalize_freq,
+      source_label = "GRF ABM"
+    ))
   }
-  long <- lapply(names(cpp_res), function(s) {
-    t <- as.numeric(s) * abm_delta_t
-    cnt <- cpp_res[[s]]
-    if(length(cnt) && sum(cnt) > 0) {
-      freq <- cnt 
-      if(normalize_freq) freq <- cnt / sum(cnt)
-      data.frame(time = t, Karyotype = names(freq), Frequency = as.numeric(freq))
-    } else data.frame(time = t, Karyotype = character(0), Frequency = numeric(0))
-  })
-  long <- do.call(rbind, long)
-  
-  if(nrow(long)) {
-    wide <- tidyr::pivot_wider(long, names_from = .data$Karyotype,
-                               values_from = .data$Frequency, values_fill = 0)
-    miss <- setdiff(names(x0), names(wide))
-    for(m in miss) wide[[m]] <- 0
-    karyo_cols <- setdiff(names(wide), "time")
-    wide[, c("time", karyo_cols), drop = FALSE]
-  } else {
-    data.frame(time = unique(times),
-               t(matrix(0, nrow = length(times), ncol = length(x0),
-                        dimnames = list(NULL, names(x0)))))
-  }
+  abm_cpp_results_to_wide(
+    cpp_results = cpp_res,
+    requested_steps = requested_steps,
+    requested_times = times,
+    known_karyotypes = names(x0),
+    normalize_counts = normalize_freq,
+    source_label = "GRF ABM"
+  )
 }
 
 

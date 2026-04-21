@@ -9,6 +9,7 @@
 #include <algorithm> // std::sample, std::min/max, std::sort
 #include <iterator>  // std::begin, std::end, std::back_inserter
 #include <cmath>     // std::round
+#include <limits>
 #include <stdexcept> // For exception catching
 // Removed: const int N_CHROMOSOME_TYPES = 22;
 
@@ -25,6 +26,35 @@ struct VectorHasher {
 
 typedef std::unordered_map<std::vector<int>, long long, VectorHasher> PopulationMap;
 typedef std::unordered_map<std::vector<int>, double, VectorHasher> FitnessMap;
+
+namespace {
+
+constexpr double ABM_MAX_EXACT_INTEGER = 9007199254740991.0;
+
+bool is_integer_valued_double(double x) {
+  return std::floor(x) == x;
+}
+
+long long validate_initial_population_count(double count_r, const std::string& k_str) {
+  if (!R_finite(count_r)) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be finite.", k_str.c_str());
+  }
+  if (count_r < 0.0) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be non-negative.", k_str.c_str());
+  }
+  if (!is_integer_valued_double(count_r)) {
+    Rcpp::stop("`initial_population_r[['%s']]` must be integer-valued.", k_str.c_str());
+  }
+  if (count_r > ABM_MAX_EXACT_INTEGER) {
+    Rcpp::stop("`initial_population_r[['%s']]` exceeds the supported exact-integer range.", k_str.c_str());
+  }
+  if (count_r > static_cast<double>(std::numeric_limits<long long>::max())) {
+    Rcpp::stop("`initial_population_r[['%s']]` exceeds the supported long long range.", k_str.c_str());
+  }
+  return static_cast<long long>(count_r);
+}
+
+} // namespace
 
 // --- Helper Function Definitions ---
 // Parse "1.2.3..." string to vector<int>
@@ -43,8 +73,8 @@ std::vector<int> parse_karyotype_string_abm(const std::string& k_str, int expect
   while(std::getline(ss, segment, '.')) {
     try {
       int val = std::stoi(segment);
-      if (val <= 0) { // Assuming karyotype counts must be positive
-        Rcpp::warning("Non-positive count (%d) in karyotype string: %s. Skipping.", val, k_str.c_str());
+      if (val < 0) {
+        Rcpp::warning("Negative count (%d) in karyotype string: %s. Skipping.", val, k_str.c_str());
         return {}; 
       }
       cn.push_back(val);
@@ -179,8 +209,8 @@ std::pair<std::vector<int>, std::vector<int>> generate_misseg_daughters(
   bool d1_valid = true;
   bool d2_valid = true;
   for(size_t i = 0; i < parent_cn.size(); ++i) { // Loop up to parent_cn.size()
-    if(daughter1_cn[i] <= 0) d1_valid = false; // Counts cannot be negative
-    if(daughter2_cn[i] <= 0) d2_valid = false; // Changed from <=0 to <0, assuming 0 is viable if some other chrom present
+    if(daughter1_cn[i] < 0) d1_valid = false;
+    if(daughter2_cn[i] < 0) d2_valid = false;
   }
   
   std::pair<std::vector<int>, std::vector<int>> result;
@@ -205,6 +235,25 @@ Rcpp::List run_karyotype_abm(
     double      grf_lambda                  = NA_REAL
 )
 {
+  if (!R_finite(p_missegregation) || p_missegregation < 0.0 || p_missegregation > 1.0) {
+    Rcpp::stop("`p_missegregation` must be finite and in [0, 1].");
+  }
+  if (!R_finite(dt) || dt <= 0.0) {
+    Rcpp::stop("`dt` must be a positive finite value.");
+  }
+  if (n_steps < 0) {
+    Rcpp::stop("`n_steps` must be non-negative.");
+  }
+  if (!R_finite(culling_survival_fraction) || culling_survival_fraction < 0.0 || culling_survival_fraction > 1.0) {
+    Rcpp::stop("`culling_survival_fraction` must be finite and in [0, 1].");
+  }
+  if (record_interval == 0) {
+    Rcpp::stop("`record_interval` must not be zero.");
+  }
+  if (grf_centroids.nrow() > 0 && (!R_finite(grf_lambda) || grf_lambda <= 0.0)) {
+    Rcpp::stop("`grf_lambda` must be a positive finite value when GRF centroids are supplied.");
+  }
+
   PopulationMap population;
   FitnessMap fitness_map; 
   std::mt19937 rng_engine;
@@ -252,8 +301,11 @@ Rcpp::List run_karyotype_abm(
   for(int i = 0; i < initial_k_names.size(); ++i) {
     std::string k_str = Rcpp::as<std::string>(initial_k_names[i]);
     double count_r = 0;
-    try { count_r = Rcpp::as<double>(initial_population_r[k_str]); }
-    catch (...) { /* Handle or skip */ continue; }
+    try {
+      count_r = Rcpp::as<double>(initial_population_r[k_str]);
+    } catch (...) {
+      Rcpp::stop("`initial_population_r[['%s']]` must be coercible to a finite numeric count.", k_str.c_str());
+    }
     
     std::vector<int> cn;
     if (n_chr_types_sim == -1) {
@@ -267,11 +319,7 @@ Rcpp::List run_karyotype_abm(
     }
     
     if(!cn.empty()) {
-      if(count_r >= 0) {
-        population[cn] = static_cast<long long>(std::round(count_r));
-      } else {
-        population[cn] = 0LL;
-      }
+      population[cn] = validate_initial_population_count(count_r, k_str);
     } 
   }
   
@@ -344,7 +392,7 @@ Rcpp::List run_karyotype_abm(
   
   std::poisson_distribution<long long> poisson_dist;
   std::binomial_distribution<long long> binomial_dist_ll;
-  std::binomial_distribution<int> error_dist_binomial; // Renamed error_dist
+  bool warned_large_dt = false;
   
   for (int step = 1; step <= n_steps; ++step) {
     if (population.empty()) {
@@ -372,11 +420,13 @@ Rcpp::List run_karyotype_abm(
         : get_fitness_abm(parent_cn, fitness_map);
       
       
-      if (fitness <= 0 && parent_count > 0) { // Only process if fitness > 0 for divisions
-        net_changes_this_step[parent_cn] -= parent_count; // Cells die or don't divide
-        continue;
+      if (fitness <= 0) {
+        continue; // Non-positive fitness means no division in the current ABM.
       }
-      if (fitness <= 0) continue; // Skip if no chance of division
+      if (!warned_large_dt && fitness * dt > 0.1) {
+        Rcpp::warning("ABM time step may be too large: fitness * dt > 0.1; growth may be underestimated.");
+        warned_large_dt = true;
+      }
       
       double expected_divisions = static_cast<double>(parent_count) * fitness * dt;
       if (expected_divisions < 0) expected_divisions = 0; // Should not happen if fitness > 0
@@ -394,32 +444,15 @@ Rcpp::List run_karyotype_abm(
         continue;
       }
       
-      // Determine number of missegregations for these n_divs
-      long long n_faithful_divs = 0;
-      if (n_chrom_total_parent == 0) { // If parent has no chromosomes, all divisions are "faithful" (0 errors)
-        n_faithful_divs = n_divs;
-      } else {
-        error_dist_binomial.param(typename std::binomial_distribution<int>::param_type(n_divs, p_missegregation));
-        long long n_misseg_events_total_across_divs = error_dist_binomial(rng_engine); // Total divisions that will have >=1 error
-        n_faithful_divs = n_divs - n_misseg_events_total_across_divs;
-      }
-      
-      net_changes_this_step[parent_cn] += (n_faithful_divs - n_divs); // Faithful add 2, lose 1; unfaithful lose 1. Net for parent.
-      // Net: n_faithful_divs * 1 (parent replaced by 2 daughters, one is like parent)
-      //      + (n_divs - n_faithful_divs) * (-1) (parent lost, replaced by errant daughters)
-      // Simpler: parent_count -= n_divs; (these are "consumed")
-      //          faithful_daughters_like_parent += n_faithful_divs;
-      //          faithful_daughters_other += n_faithful_divs;
-      // Let's use the logic from your original C++ for num_missegs distribution.
-      // The logic below is what you had and re-implements the per-division error decision.
-      
+      // Each completed division consumes one parent exactly once. Daughters are the
+      // only source of gains, whether the division is faithful or missegregating.
       net_changes_this_step[parent_cn] -= n_divs; // All dividing parents are removed first
       
       for (long long div_idx = 0; div_idx < n_divs; ++div_idx) {
         int k_errors_this_division = 0;
         if (n_chrom_total_parent > 0 && p_missegregation > 0) { // Only attempt binomial if possible errors
-          std::binomial_distribution<int> division_error_count_dist(n_chrom_total_parent, p_missegregation); // Errors per chromosome
-          k_errors_this_division = division_error_count_dist(rng_engine); // Number of chromosomes that missegregate
+          std::binomial_distribution<long long> division_error_count_dist(n_chrom_total_parent, p_missegregation);
+          k_errors_this_division = static_cast<int>(division_error_count_dist(rng_engine));
         }
         
         std::pair<std::vector<int>, std::vector<int>> daughters =

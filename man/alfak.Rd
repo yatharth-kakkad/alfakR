@@ -7,12 +7,19 @@
 alfak(
   yi,
   outdir,
-  passage_times,
+  passage_times = NULL,
   minobs = 20,
   nboot = 45,
   n0 = 1e+05,
   nb = 1e+07,
-  pm = 5e-05
+  pm = 5e-05,
+  allow_noninteger_counts = FALSE,
+  correct_efflux = FALSE,
+  landscape_data_output = FALSE,
+  nn_prior = c("empirical", "none"),
+  nn_prior_sd = NULL,
+  nn_prior_sd_floor = ALFAK_NN_PRIOR_SD_FLOOR,
+  krig_bootstrap_mode = c("marginal", "joint")
 )
 }
 \arguments{
@@ -28,12 +35,16 @@ Colnames should represent time values that can be multiplied by \code{dt}.
 \item{outdir}{A string specifying the directory path where result files
 (RDS format) will be saved. The directory will be created if it doesn't exist.}
 
-\item{passage_times}{An optional numeric vector of passage times. If \code{NULL},
-calculated from \code{colnames(yi$x) * yi$dt}.}
+\item{passage_times}{An optional numeric vector giving the final internal time
+axis used by the fitter. If \code{NULL}, the time axis is calculated as
+\code{as.numeric(colnames(yi$x)) * yi$dt}. When supplied, \code{passage_times} is used
+as-is and must be numeric, finite, strictly increasing, and have length
+\code{ncol(yi$x)}.}
 
 \item{minobs}{An integer, the minimum total number of observations (reads/counts)
 for a karyotype across all timepoints to be considered "frequent" and included
-in the analysis. Default is 20.}
+in the analysis. A karyotype is considered frequent when
+\code{rowSums(yi$x) >= minobs}. Default is 20.}
 
 \item{nboot}{An integer, the number of bootstrap iterations for fitness
 estimation and for the Kriging process in \code{fitKrig}. Default is 45.}
@@ -46,6 +57,39 @@ size after transfer), used for g0 calculation. Default is 1e7.}
 
 \item{pm}{A numeric value, the per-locus mutation/error rate used in \code{pij}
 calculations. Default is 0.00005.}
+
+\item{allow_noninteger_counts}{Logical; if \code{FALSE} (default), non-integer
+counts in \code{yi$x} are rejected. If \code{TRUE}, they are rounded once at entry
+with a warning.}
+
+\item{correct_efflux}{Logical; if \code{TRUE}, apply the efflux correction after a
+one-time viability pre-check on the frequent karyotypes. The viability term
+currently depends only on total copy number through
+\code{2 * (1 - pm)^total_copy_number - 1}, so this is a ploidy-level approximation
+rather than a chromosome-specific model.}
+
+\item{landscape_data_output}{Logical; if \code{TRUE}, also save the optional
+\code{landscape_data.Rds} file containing the stable Kriging mean and median
+model objects. Default is \code{FALSE}, so only the documented core outputs are
+written.}
+
+\item{nn_prior}{Character; nearest-neighbour prior mode for latent children.
+\code{"empirical"} uses the current empirical child-minus-parent prior estimated
+from observed neighbours, while \code{"none"} disables that prior contribution.
+Default is \code{"empirical"}.}
+
+\item{nn_prior_sd}{Optional numeric scalar. If supplied, this overrides the
+empirically estimated prior standard deviation for latent-neighbour fitting.}
+
+\item{nn_prior_sd_floor}{Numeric scalar giving the minimum standard deviation
+used when the empirical prior variance is zero or too small. Default is
+\code{1e-3}.}
+
+\item{krig_bootstrap_mode}{Character; \code{"marginal"} (default) samples
+bootstrap fitness values independently by column, matching the original
+ALFA-K Kriging bootstrap and cross-validation behavior. \code{"joint"} samples
+one full bootstrap row at a time, preserving within-bootstrap dependence
+across karyotypes.}
 }
 \value{
 Returns the cross-validation R-squared value (\code{Rxv}) invisibly.
@@ -57,6 +101,8 @@ Kriging-inferred fitness landscape from \code{fitKrig}.
 \item \code{landscape_posterior_samples.Rds}: The full matrix of posterior
 samples from the Kriging bootstraps in \code{fitKrig}.
 \item \code{xval.Rds}: The cross-validation R-squared value (\code{Rxv}).
+\item \code{landscape_data.Rds}: Optional stable Kriging mean/median model
+objects, written only when \code{landscape_data_output = TRUE}.
 }
 }
 \description{
