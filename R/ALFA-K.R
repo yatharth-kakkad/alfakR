@@ -283,6 +283,7 @@ ALFAK_NN_PRIOR_SD_FLOOR <- 1e-3
 ALFAK_COUNT_INTEGER_TOL <- sqrt(.Machine$double.eps)
 ALFAK_KRIG_NSTEP_CV <- 200L
 ALFAK_MAX_EXACT_INTEGER <- 2^53 - 1
+ALFAK_BOOTSTRAP_MAX_ATTEMPTS_PER_SUCCESS <- 20L
 
 #' Validate scalar positive integer input
 #' @keywords internal
@@ -1315,12 +1316,89 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
          f_nn = fc)
   }
 
-  # Run bootstrap iterations serially using lapply
-  boot_list <- lapply(seq_len(nboot), bootstrap_iter,
-                      current_data = data, current_fq = fq, current_timepoints = timepoints,
-                      current_num_species = num_species, current_num_timepoints = num_timepoints,
-                      current_epsilon = epsilon, current_n0 = n0, current_nb = nb,
-                      current_viability = viability, current_nn_info = nn_info_list)
+  # Run bootstrap iterations serially, retrying failed resamples until nboot succeed.
+  boot_list <- vector("list", nboot)
+  failure_records <- list()
+  recent_failure_messages <- character()
+  max_attempts <- nboot * ALFAK_BOOTSTRAP_MAX_ATTEMPTS_PER_SUCCESS
+  successful_replicates <- 0L
+  total_attempts <- 0L
+
+  record_bootstrap_failure <- function(target_replicate, attempt, error_message, warning_messages) {
+    warning_message <- if (length(warning_messages) > 0) {
+      paste(unique(warning_messages), collapse = " | ")
+    } else {
+      NA_character_
+    }
+    failure_records[[length(failure_records) + 1L]] <<- list(
+      target_replicate = target_replicate,
+      attempt = attempt,
+      error_message = error_message,
+      warning_message = warning_message
+    )
+    recent_failure_messages <<- c(
+      recent_failure_messages,
+      sprintf("target replicate %d, attempt %d: %s", target_replicate, attempt, error_message)
+    )
+  }
+
+  while (successful_replicates < nboot && total_attempts < max_attempts) {
+    total_attempts <- total_attempts + 1L
+    target_replicate <- successful_replicates + 1L
+    attempt_warnings <- character()
+    attempt_result <- tryCatch(
+      withCallingHandlers(
+        bootstrap_iter(
+          target_replicate,
+          current_data = data, current_fq = fq, current_timepoints = timepoints,
+          current_num_species = num_species, current_num_timepoints = num_timepoints,
+          current_epsilon = epsilon, current_n0 = n0, current_nb = nb,
+          current_viability = viability, current_nn_info = nn_info_list
+        ),
+        warning = function(w) {
+          attempt_warnings <<- c(attempt_warnings, conditionMessage(w))
+        }
+      ),
+      error = function(e) {
+        structure(list(error = e), class = "alfak_bootstrap_attempt_error")
+      }
+    )
+
+    if (inherits(attempt_result, "alfak_bootstrap_attempt_error")) {
+      record_bootstrap_failure(
+        target_replicate = target_replicate,
+        attempt = total_attempts,
+        error_message = conditionMessage(attempt_result$error),
+        warning_messages = attempt_warnings
+      )
+      next
+    }
+
+    successful_replicates <- successful_replicates + 1L
+    boot_list[[successful_replicates]] <- attempt_result
+  }
+
+  if (successful_replicates < nboot) {
+    recent_failures <- utils::tail(recent_failure_messages, 5)
+    if (length(recent_failures) == 0) {
+      recent_failures <- "none recorded"
+    }
+    stop(
+      sprintf(
+        paste0(
+          "solve_fitness_bootstrap failed to obtain requested bootstrap replicates after retrying. ",
+          "requested nboot: %d; successful replicates: %d; total attempts: %d; ",
+          "max attempts: %d; recent failure messages: %s"
+        ),
+        nboot,
+        successful_replicates,
+        total_attempts,
+        max_attempts,
+        paste(recent_failures, collapse = " || ")
+      ),
+      call. = FALSE
+    )
+  }
 
   # Consolidate results
   f_initial_mat <- do.call(rbind, lapply(boot_list, function(x) x$f_initial))
@@ -1343,11 +1421,41 @@ solve_fitness_bootstrap <- function(data, minobs, nboot = 1000, epsilon = 1e-6, 
     colnames(f_nn_mat) <- names(nn_info_list)
   }
 
-  list(initial_fitness = f_initial_mat,
-       final_fitness = f_final_mat,
-       initial_frequencies = x0_initial_mat,
-       final_frequencies = x0_final_mat,
-       nn_fitness = f_nn_mat)
+  result <- list(initial_fitness = f_initial_mat,
+                 final_fitness = f_final_mat,
+                 initial_frequencies = x0_initial_mat,
+                 final_frequencies = x0_final_mat,
+                 nn_fitness = f_nn_mat)
+
+  retry_log <- if (length(failure_records) > 0) {
+    do.call(rbind, lapply(failure_records, function(record) {
+      data.frame(
+        target_replicate = record$target_replicate,
+        attempt = record$attempt,
+        error_message = record$error_message,
+        warning_message = record$warning_message,
+        stringsAsFactors = FALSE
+      )
+    }))
+  } else {
+    data.frame(
+      target_replicate = integer(0),
+      attempt = integer(0),
+      error_message = character(0),
+      warning_message = character(0),
+      stringsAsFactors = FALSE
+    )
+  }
+  attr(result, "bootstrap_retry_log") <- retry_log
+  attr(result, "bootstrap_retry_summary") <- list(
+    requested_nboot = nboot,
+    successful_replicates = successful_replicates,
+    total_attempts = total_attempts,
+    failed_attempts = length(failure_records),
+    max_attempts = max_attempts
+  )
+
+  result
 }
 
 #' Fit Kriging model to fitness data (Internal function)

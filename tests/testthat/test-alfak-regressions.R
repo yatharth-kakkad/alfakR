@@ -403,6 +403,114 @@ test_that("solve_fitness_bootstrap validates bootstrap controls and pm before ne
   expect_false(isTRUE(seen$gen_nn_called))
 })
 
+test_that("solve_fitness_bootstrap retries failed bootstrap replicates and logs failures", {
+  yi <- make_simple_yi(
+    make_counts(
+      c(10, 12,
+        20, 18),
+      rownames_vec = c("2.2.2", "2.2.1"),
+      colnames_vec = c("0", "1")
+    )
+  )
+  seen <- new.env(parent = emptyenv())
+  seen$initial_frequency_calls <- 0L
+
+  res <- testthat::with_mocked_bindings(
+    {
+      alfakR:::solve_fitness_bootstrap(
+        yi,
+        minobs = 1,
+        nboot = 2,
+        n0 = 1e4,
+        nb = 1e6,
+        pm = 1e-4
+      )
+    },
+    bootstrap_counts = function(data) data,
+    compute_dx_dt = function(x, timepoints) matrix(0, nrow = nrow(x), ncol = ncol(x) - 1),
+    alfak_qr_accum_cpp = function(x_trim, dx_dt) {
+      list(Q_accum = diag(nrow(x_trim)), r_accum = rep(0, nrow(x_trim)))
+    },
+    run_solve_qp_checked = function(Dmat, dvec, Amat, bvec, meq, context) {
+      list(solution = rep(0, nrow(Dmat)))
+    },
+    optimize_initial_frequencies = function(x_obs, f, timepoints) {
+      seen$initial_frequency_calls <- seen$initial_frequency_calls + 1L
+      if (seen$initial_frequency_calls == 1L) {
+        stop("forced bootstrap failure")
+      }
+      rep(1 / nrow(x_obs), nrow(x_obs))
+    },
+    joint_optimize = function(counts, timepoints, f_init, x0_init) {
+      list(f = rep(0, nrow(counts)), x0 = rep(1 / nrow(counts), nrow(counts)))
+    },
+    project_forward_log = function(x0, f, timepoints) {
+      matrix(rep(x0, length(timepoints)), nrow = length(x0), ncol = length(timepoints))
+    },
+    find_birth_times = function(opt_res, time_range, minF) rep(0, length(opt_res$f)),
+    gen_nn_info = function(...) list(),
+    .package = "alfakR"
+  )
+
+  expect_equal(nrow(res$initial_fitness), 2)
+  expect_equal(nrow(res$final_fitness), 2)
+  expect_equal(nrow(res$initial_frequencies), 2)
+  expect_equal(nrow(res$final_frequencies), 2)
+  expect_equal(nrow(res$nn_fitness), 2)
+  expect_equal(seen$initial_frequency_calls, 3)
+
+  retry_log <- attr(res, "bootstrap_retry_log")
+  expect_s3_class(retry_log, "data.frame")
+  expect_equal(nrow(retry_log), 1)
+  expect_equal(retry_log$target_replicate, 1)
+  expect_equal(retry_log$attempt, 1)
+  expect_match(retry_log$error_message, "forced bootstrap failure")
+
+  retry_summary <- attr(res, "bootstrap_retry_summary")
+  expect_equal(retry_summary$requested_nboot, 2)
+  expect_equal(retry_summary$successful_replicates, 2)
+  expect_equal(retry_summary$total_attempts, 3)
+  expect_equal(retry_summary$failed_attempts, 1)
+})
+
+test_that("solve_fitness_bootstrap reports retry exhaustion details", {
+  yi <- make_simple_yi(
+    make_counts(
+      c(10, 12,
+        20, 18),
+      rownames_vec = c("2.2.2", "2.2.1"),
+      colnames_vec = c("0", "1")
+    )
+  )
+
+  expect_error(
+    testthat::with_mocked_bindings(
+      {
+        alfakR:::solve_fitness_bootstrap(
+          yi,
+          minobs = 1,
+          nboot = 1,
+          n0 = 1e4,
+          nb = 1e6,
+          pm = 1e-4
+        )
+      },
+      bootstrap_counts = function(data) data,
+      compute_dx_dt = function(x, timepoints) matrix(0, nrow = nrow(x), ncol = ncol(x) - 1),
+      alfak_qr_accum_cpp = function(x_trim, dx_dt) {
+        list(Q_accum = diag(nrow(x_trim)), r_accum = rep(0, nrow(x_trim)))
+      },
+      run_solve_qp_checked = function(Dmat, dvec, Amat, bvec, meq, context) {
+        list(solution = rep(0, nrow(Dmat)))
+      },
+      optimize_initial_frequencies = function(...) stop("repeated bootstrap failure"),
+      gen_nn_info = function(...) list(),
+      .package = "alfakR"
+    ),
+    "requested nboot: 1; successful replicates: 0; total attempts: 20;.*repeated bootstrap failure"
+  )
+})
+
 test_that("correct_efflux stops before bootstrap when viability is non-positive", {
   yi <- list(
     x = make_counts(
