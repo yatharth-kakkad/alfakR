@@ -1,6 +1,7 @@
-# Compare transition-karyotype targeting against a random-panel null model,
-# across replicate seeds and a longer horizon so cells have time to spread
-# across the graph (otherwise a random panel rarely overlaps occupied nodes).
+# Compare transition-karyotype targeting against a random-panel null model.
+# null_model = TRUE runs the null-model condition automatically inside
+# run_transition_karyotype_abm() alongside the no-treatment and ranked
+# conditions, inheriting all the same inputs -- no separate call needed.
 #
 # Run from the package root after installing/loading alfakR:
 # Rscript inst/examples/run_transition_random_control_example.R
@@ -29,6 +30,7 @@ common_args <- list(
   transition_scores = transition_scores_path,
   horizon_timestep = 180,
   transition_top_n = 10,
+  null_model = TRUE,
   tau1 = 30,
   p_missegregation = 0.02,
   base_death_rate = 0.01,
@@ -41,29 +43,24 @@ common_args <- list(
 
 seeds <- 1:20
 rows <- lapply(seeds, function(s) {
-  ranked_result <- do.call(run_transition_karyotype_abm, c(common_args, list(
-    target_selection = "ranked", abm_seed = s
-  )))
-  random_result <- do.call(run_transition_karyotype_abm, c(common_args, list(
-    target_selection = "random", random_target_seed = s, abm_seed = s
-  )))
+  result <- do.call(run_transition_karyotype_abm, c(common_args, list(abm_seed = s)))
+  es <- result$endpoint_summary
   data.frame(
     seed = s,
-    condition1_final_population = ranked_result$endpoint_summary$condition1_final_population,
-    condition1_final_diversity = ranked_result$endpoint_summary$condition1_final_diversity,
-    ranked_final_population = ranked_result$endpoint_summary$condition2_final_population,
-    ranked_final_diversity = ranked_result$endpoint_summary$condition2_final_diversity,
-    ranked_population_reduction_pct = ranked_result$endpoint_summary$population_reduction_pct,
-    ranked_diversity_reduction_pct = ranked_result$endpoint_summary$diversity_reduction_pct,
-    random_final_population = random_result$endpoint_summary$condition2_final_population,
-    random_final_diversity = random_result$endpoint_summary$condition2_final_diversity,
-    random_population_reduction_pct = random_result$endpoint_summary$population_reduction_pct,
-    random_diversity_reduction_pct = random_result$endpoint_summary$diversity_reduction_pct
+    condition1_final_population = es$condition1_final_population,
+    condition1_final_diversity = es$condition1_final_diversity,
+    ranked_final_population = es$condition2_final_population,
+    ranked_final_diversity = es$condition2_final_diversity,
+    ranked_population_reduction_pct = es$population_reduction_pct,
+    ranked_diversity_reduction_pct = es$diversity_reduction_pct,
+    random_final_population = es$condition3_final_population,
+    random_final_diversity = es$condition3_final_diversity,
+    random_population_reduction_pct = es$null_model_population_reduction_pct,
+    random_diversity_reduction_pct = es$null_model_diversity_reduction_pct
   )
 })
 per_seed <- do.call(rbind, rows)
 
-summarize <- function(x) c(mean = mean(x), sd = stats::sd(x))
 panel_summary <- data.frame(
   panel = c("condition1_no_second_treatment", "condition2_ranked_transition_targets", "condition3_random_panel_null"),
   mean_final_population = c(
