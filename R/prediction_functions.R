@@ -475,6 +475,280 @@ run_abm_simulation <- function(lscape, p, times, x0, abm_pop_size, abm_delta_t,
     source_label = "ABM"
   )
 }
+
+read_transition_csv <- function(x) {
+  if (is.character(x) && length(x) == 1) {
+    return(utils::read.csv(x, stringsAsFactors = FALSE, check.names = FALSE))
+  }
+  x
+}
+
+standardize_transition_node_metadata <- function(node_metadata, untreated_peak_percentile = 99) {
+  node_metadata <- read_transition_csv(node_metadata)
+  if (!is.data.frame(node_metadata)) {
+    stop("`node_metadata` must be a data.frame or path to a CSV.", call. = FALSE)
+  }
+  if (!"karyotype" %in% names(node_metadata) && "name" %in% names(node_metadata)) {
+    node_metadata$karyotype <- node_metadata$name
+  }
+  if (!"untreated_fitness" %in% names(node_metadata) && "untreated_mean" %in% names(node_metadata)) {
+    node_metadata$untreated_fitness <- node_metadata$untreated_mean
+  }
+  if (!"treated_fitness" %in% names(node_metadata) && "treated_mean" %in% names(node_metadata)) {
+    node_metadata$treated_fitness <- node_metadata$treated_mean
+  }
+  if (!"is_untreated_peak" %in% names(node_metadata) && "untreated_pct_rank" %in% names(node_metadata)) {
+    untreated_rank <- as.numeric(node_metadata$untreated_pct_rank)
+    node_metadata$is_untreated_peak <- is.finite(untreated_rank) & untreated_rank >= untreated_peak_percentile
+  }
+  if (!"transition_rank" %in% names(node_metadata) && "transition_score" %in% names(node_metadata)) {
+    score <- as.numeric(node_metadata$transition_score)
+    node_metadata$transition_rank <- NA_real_
+    ranked <- which(is.finite(score))
+    node_metadata$transition_rank[ranked] <- rank(-score[ranked], ties.method = "first")
+  }
+  node_metadata
+}
+
+fill_missing_transition_fitness <- function(node_metadata, missing_fitness_value = 0) {
+  validate_scalar_finite_number(missing_fitness_value, "missing_fitness_value")
+  node_metadata$untreated_fitness <- as.numeric(node_metadata$untreated_fitness)
+  node_metadata$treated_fitness <- as.numeric(node_metadata$treated_fitness)
+  node_metadata$untreated_fitness[!is.finite(node_metadata$untreated_fitness)] <- missing_fitness_value
+  node_metadata$treated_fitness[!is.finite(node_metadata$treated_fitness)] <- missing_fitness_value
+  node_metadata
+}
+
+apply_transition_scores <- function(node_metadata, transition_scores = NULL) {
+  if (is.null(transition_scores)) {
+    return(node_metadata)
+  }
+  transition_scores <- read_transition_csv(transition_scores)
+  if (!is.data.frame(transition_scores) || !all(c("karyotype", "transition_score") %in% names(transition_scores))) {
+    stop("`transition_scores` must contain `karyotype` and `transition_score` columns.", call. = FALSE)
+  }
+  transition_scores$karyotype <- as.character(transition_scores$karyotype)
+  transition_scores$transition_score <- as.numeric(transition_scores$transition_score)
+  transition_scores <- transition_scores[is.finite(transition_scores$transition_score), , drop = FALSE]
+  transition_scores <- transition_scores[order(-transition_scores$transition_score), , drop = FALSE]
+  transition_scores$transition_rank <- seq_len(nrow(transition_scores))
+
+  rank_map <- stats::setNames(transition_scores$transition_rank, transition_scores$karyotype)
+  score_map <- stats::setNames(transition_scores$transition_score, transition_scores$karyotype)
+  node_metadata$transition_rank <- unname(rank_map[node_metadata$karyotype])
+  node_metadata$transition_score <- unname(score_map[node_metadata$karyotype])
+  node_metadata
+}
+
+validate_transition_node_metadata <- function(node_metadata) {
+  required <- c(
+    "karyotype", "untreated_fitness", "treated_fitness",
+    "is_untreated_peak", "transition_rank"
+  )
+  if (!is.data.frame(node_metadata) || !all(required %in% names(node_metadata))) {
+    stop(
+      "`node_metadata` must be a data.frame with columns: ",
+      paste(required, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  if (!is.character(node_metadata$karyotype) || any(!nzchar(node_metadata$karyotype))) {
+    stop("`node_metadata$karyotype` must contain non-empty character karyotype IDs.", call. = FALSE)
+  }
+  if (anyDuplicated(node_metadata$karyotype)) {
+    stop("`node_metadata$karyotype` must be unique.", call. = FALSE)
+  }
+  validate_finite_numeric_vector(node_metadata$untreated_fitness, "node_metadata$untreated_fitness")
+  validate_finite_numeric_vector(node_metadata$treated_fitness, "node_metadata$treated_fitness")
+  if (length(node_metadata$untreated_fitness) != nrow(node_metadata) ||
+      length(node_metadata$treated_fitness) != nrow(node_metadata)) {
+    stop("Fitness columns must have one value per node.", call. = FALSE)
+  }
+  if (!is.logical(node_metadata$is_untreated_peak)) {
+    node_metadata$is_untreated_peak <- as.logical(node_metadata$is_untreated_peak)
+  }
+  if (anyNA(node_metadata$is_untreated_peak)) {
+    stop("`node_metadata$is_untreated_peak` must be coercible to TRUE/FALSE.", call. = FALSE)
+  }
+  if (!is.numeric(node_metadata$transition_rank)) {
+    node_metadata$transition_rank <- suppressWarnings(as.numeric(node_metadata$transition_rank))
+  }
+  if (any(!is.finite(node_metadata$transition_rank) & !is.na(node_metadata$transition_rank))) {
+    stop("`node_metadata$transition_rank` must contain finite ranks or NA.", call. = FALSE)
+  }
+  parse_karyotypes(node_metadata$karyotype)
+  node_metadata
+}
+
+validate_transition_edges <- function(edges, known_karyotypes) {
+  edges <- read_transition_csv(edges)
+  if (!is.data.frame(edges) || !all(c("from", "to") %in% names(edges))) {
+    stop("`edges` must be a data.frame with columns `from` and `to`.", call. = FALSE)
+  }
+  if (!is.character(edges$from)) edges$from <- as.character(edges$from)
+  if (!is.character(edges$to)) edges$to <- as.character(edges$to)
+  if (any(!nzchar(edges$from)) || any(!nzchar(edges$to))) {
+    stop("`edges$from` and `edges$to` must contain non-empty karyotype IDs.", call. = FALSE)
+  }
+  missing_nodes <- setdiff(unique(c(edges$from, edges$to)), known_karyotypes)
+  if (length(missing_nodes)) {
+    stop(
+      "Network edges reference karyotypes absent from `node_metadata`: ",
+      paste(utils::head(missing_nodes, 10), collapse = ", "),
+      call. = FALSE
+    )
+  }
+  edges
+}
+
+build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
+  adjacency <- stats::setNames(vector("list", length(karyotypes)), karyotypes)
+  for (i in seq_along(adjacency)) adjacency[[i]] <- character(0)
+  if (nrow(edges) > 0) {
+    for (i in seq_len(nrow(edges))) {
+      adjacency[[edges$from[i]]] <- unique(c(adjacency[[edges$from[i]]], edges$to[i]))
+      if (isTRUE(undirected)) {
+        adjacency[[edges$to[i]]] <- unique(c(adjacency[[edges$to[i]]], edges$from[i]))
+      }
+    }
+  }
+  adjacency
+}
+
+#' Run transition-karyotype treatment ABM
+#'
+#' Implements the report ABM update order: death, graph-neighbor
+#' missegregation, birth, first-treatment fitness switching, automatic second
+#' treatment timing, and endpoint population/diversity reduction summaries.
+#'
+#' @param node_metadata Data frame, or path to a CSV, with either the canonical
+#'   columns `karyotype`, `untreated_fitness`, `treated_fitness`,
+#'   `is_untreated_peak`, `transition_rank`, or the report-export columns
+#'   `name`, `untreated_mean`, `untreated_pct_rank`, `treated_mean`,
+#'   `treated_pct_rank`.
+#' @param edges Data frame, or path to a CSV, with from/to columns describing
+#'   the karyotype graph.
+#' @param transition_scores Optional data frame, or path to a CSV, with
+#'   `karyotype` and `transition_score`; when supplied, top targets are selected
+#'   from this file.
+#' @param missing_fitness_value Value used when a node is absent from one
+#'   condition-specific ALFA-K landscape and therefore has missing fitness in
+#'   that condition. Default is `0`, meaning baseline birth only.
+#' @param times Non-negative output times aligned to `abm_delta_t`.
+#' @param tau1 First-treatment time. Use `30` for 30 untreated steps followed by
+#'   treatment starting on step 31 when `abm_delta_t = 1`.
+#' @param p_missegregation Per-step probability of graph-neighbor movement.
+#' @param transition_top_n Number of highest-ranked transition karyotypes to target.
+#' @param abm_pop_size Initial total population allocated across untreated peaks.
+#' @param base_death_rate Baseline per-step death probability.
+#' @param base_birth_rate Baseline per-step birth probability.
+#' @param fitness_birth_scale Scaling from active ALFA-K fitness to birth probability.
+#' @param second_treatment_strength Extra death probability for targeted transition karyotypes.
+#' @param abm_delta_t Duration of one ABM step.
+#' @param abm_record_interval Record every N steps.
+#' @param abm_seed RNG seed, or -1 for random.
+#' @param undirected_edges Treat edges as undirected.
+#' @return A list with condition-specific count records, metrics, tau2, and endpoint summary.
+#' @export
+run_transition_karyotype_abm <- function(node_metadata, edges, times,
+                                         transition_scores = NULL,
+                                         tau1 = 30,
+                                         p_missegregation = 0.02,
+                                         transition_top_n = 10,
+                                         abm_pop_size = 1e4,
+                                         base_death_rate = 0.01,
+                                         base_birth_rate = 0.02,
+                                         fitness_birth_scale = 0.1,
+                                         second_treatment_strength = 0.9,
+                                         abm_delta_t = 1,
+                                         abm_record_interval = 1,
+                                         abm_seed = -1,
+                                         undirected_edges = TRUE,
+                                         untreated_peak_percentile = 99,
+                                         missing_fitness_value = 0) {
+  validate_scalar_finite_number(untreated_peak_percentile, "untreated_peak_percentile")
+  node_metadata <- standardize_transition_node_metadata(
+    node_metadata,
+    untreated_peak_percentile = untreated_peak_percentile
+  )
+  node_metadata <- apply_transition_scores(node_metadata, transition_scores = transition_scores)
+  node_metadata <- fill_missing_transition_fitness(node_metadata, missing_fitness_value = missing_fitness_value)
+  node_metadata <- validate_transition_node_metadata(node_metadata)
+  edges <- validate_transition_edges(edges, node_metadata$karyotype)
+  validate_times_vector(times, non_negative = TRUE)
+  validate_positive_finite(abm_delta_t, "abm_delta_t")
+  requested_steps <- abm_times_to_steps(times, abm_delta_t)
+  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+  validate_probability_closed(p_missegregation, "p_missegregation")
+  validate_probability_closed(base_death_rate, "base_death_rate")
+  validate_probability_closed(base_birth_rate, "base_birth_rate")
+  validate_probability_closed(second_treatment_strength, "second_treatment_strength")
+  validate_scalar_finite_number(fitness_birth_scale, "fitness_birth_scale")
+  validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
+  validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
+  validate_scalar_logical(undirected_edges, "undirected_edges")
+  validate_scalar_finite_number(tau1, "tau1")
+  if (tau1 < 0) stop("`tau1` must be non-negative.", call. = FALSE)
+  validate_cpp_integerish_scalar(transition_top_n, "transition_top_n", min_value = 1, target = "int")
+
+  tau1_step <- as.integer(round(tau1 / abm_delta_t))
+  if (abs(tau1 / abm_delta_t - tau1_step) > 100 * .Machine$double.eps * max(1, abs(tau1 / abm_delta_t))) {
+    stop("`tau1` must align exactly with the ABM step grid defined by `abm_delta_t`.", call. = FALSE)
+  }
+
+  initial_peaks <- node_metadata$karyotype[node_metadata$is_untreated_peak]
+  if (!length(initial_peaks)) {
+    stop("`node_metadata` must mark at least one untreated peak with `is_untreated_peak = TRUE`.", call. = FALSE)
+  }
+
+  transition_candidates <- node_metadata[is.finite(node_metadata$transition_rank), , drop = FALSE]
+  transition_candidates <- transition_candidates[order(transition_candidates$transition_rank), , drop = FALSE]
+  transition_karyotypes <- utils::head(transition_candidates$karyotype, transition_top_n)
+  if (!length(transition_karyotypes)) {
+    stop("`node_metadata$transition_rank` must identify at least one transition karyotype.", call. = FALSE)
+  }
+
+  x0 <- rep(1 / length(initial_peaks), length(initial_peaks))
+  names(x0) <- initial_peaks
+  initial_pop <- prepare_abm_initial_population(x0, abm_pop_size)
+
+  untreated_fitness <- stats::setNames(as.list(node_metadata$untreated_fitness), node_metadata$karyotype)
+  treated_fitness <- stats::setNames(as.list(node_metadata$treated_fitness), node_metadata$karyotype)
+  adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
+  effective_record_interval <- resolve_abm_record_interval(requested_steps, max(requested_steps), abm_record_interval)
+
+  result <- run_transition_treatment_abm(
+    initial_population_r = initial_pop,
+    untreated_fitness_map_r = untreated_fitness,
+    treated_fitness_map_r = treated_fitness,
+    adjacency_r = adjacency,
+    transition_karyotypes_r = transition_karyotypes,
+    p_missegregation = p_missegregation,
+    base_death_rate = base_death_rate,
+    base_birth_rate = base_birth_rate,
+    fitness_birth_scale = fitness_birth_scale,
+    second_treatment_strength = second_treatment_strength,
+    tau1_step = tau1_step + 1L,
+    dt = abm_delta_t,
+    n_steps = max(requested_steps),
+    record_interval = effective_record_interval,
+    seed = as.integer(abm_seed)
+  )
+  result$inputs <- list(
+    tau1 = tau1,
+    tau1_step = tau1_step + 1L,
+    p_missegregation = p_missegregation,
+    transition_top_n = transition_top_n,
+    transition_karyotypes = transition_karyotypes,
+    initial_untreated_peaks = initial_peaks,
+    abm_pop_size = abm_pop_size,
+    base_death_rate = base_death_rate,
+    base_birth_rate = base_birth_rate,
+    fitness_birth_scale = fitness_birth_scale,
+    second_treatment_strength = second_treatment_strength
+  )
+  result
+}
 # -------------------------------------------------------------
 # Master Prediction Function
 # -------------------------------------------------------------

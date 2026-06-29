@@ -4,6 +4,7 @@
 #include <string>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <random>
 #include <numeric>   // std::accumulate, std::iota
 #include <algorithm> // std::sample, std::min/max, std::sort
@@ -26,6 +27,8 @@ struct VectorHasher {
 
 typedef std::unordered_map<std::vector<int>, long long, VectorHasher> PopulationMap;
 typedef std::unordered_map<std::vector<int>, double, VectorHasher> FitnessMap;
+typedef std::unordered_map<std::vector<int>, std::vector<std::vector<int>>, VectorHasher> AdjacencyMap;
+typedef std::unordered_set<std::vector<int>, VectorHasher> KaryotypeSet;
 
 namespace {
 
@@ -538,4 +541,494 @@ Rcpp::List run_karyotype_abm(
     Rcpp::checkUserInterrupt();
   } 
   return results_over_time;
+}
+
+namespace {
+
+double clamp_probability(double x) {
+  if (!R_finite(x)) {
+    Rcpp::stop("Probability calculation produced a non-finite value.");
+  }
+  return std::max(0.0, std::min(1.0, x));
+}
+
+PopulationMap parse_population_list_abm(Rcpp::List population_r, int& n_chr_types) {
+  PopulationMap out;
+  Rcpp::CharacterVector names = population_r.names();
+  if (names.size() == 0) {
+    Rcpp::stop("`initial_population_r` must be a named non-empty list.");
+  }
+  for (int i = 0; i < names.size(); ++i) {
+    std::string k_str = Rcpp::as<std::string>(names[i]);
+    std::vector<int> cn = n_chr_types < 0
+      ? parse_karyotype_string_abm(k_str)
+      : parse_karyotype_string_abm(k_str, n_chr_types);
+    if (cn.empty()) {
+      Rcpp::stop("Invalid karyotype in `initial_population_r`: '%s'.", k_str.c_str());
+    }
+    if (n_chr_types < 0) {
+      n_chr_types = static_cast<int>(cn.size());
+    }
+    double count_r = Rcpp::as<double>(population_r[k_str]);
+    long long count = validate_initial_population_count(count_r, k_str);
+    if (count > 0) {
+      out[cn] += count;
+    }
+  }
+  if (out.empty()) {
+    Rcpp::stop("`initial_population_r` must contain at least one positive count.");
+  }
+  return out;
+}
+
+FitnessMap parse_fitness_list_abm(Rcpp::List fitness_r, int expected_n_chr, const char* arg_name) {
+  FitnessMap out;
+  Rcpp::CharacterVector names = fitness_r.names();
+  if (names.size() == 0) {
+    Rcpp::stop("`%s` must be a named non-empty list.", arg_name);
+  }
+  for (int i = 0; i < names.size(); ++i) {
+    std::string k_str = Rcpp::as<std::string>(names[i]);
+    std::vector<int> cn = parse_karyotype_string_abm(k_str, expected_n_chr);
+    if (cn.empty()) {
+      Rcpp::stop("Invalid karyotype in `%s`: '%s'.", arg_name, k_str.c_str());
+    }
+    double fitness = Rcpp::as<double>(fitness_r[k_str]);
+    if (!R_finite(fitness)) {
+      Rcpp::stop("`%s[['%s']]` must be finite.", arg_name, k_str.c_str());
+    }
+    out[cn] = fitness;
+  }
+  return out;
+}
+
+AdjacencyMap parse_adjacency_list_abm(Rcpp::List adjacency_r, int expected_n_chr) {
+  AdjacencyMap out;
+  Rcpp::CharacterVector names = adjacency_r.names();
+  if (names.size() == 0) {
+    Rcpp::stop("`adjacency_r` must be a named non-empty list.");
+  }
+  for (int i = 0; i < names.size(); ++i) {
+    std::string source_str = Rcpp::as<std::string>(names[i]);
+    std::vector<int> source = parse_karyotype_string_abm(source_str, expected_n_chr);
+    if (source.empty()) {
+      Rcpp::stop("Invalid source karyotype in `adjacency_r`: '%s'.", source_str.c_str());
+    }
+    Rcpp::CharacterVector neighbor_names = Rcpp::as<Rcpp::CharacterVector>(adjacency_r[source_str]);
+    std::vector<std::vector<int>> neighbors;
+    neighbors.reserve(neighbor_names.size());
+    for (int j = 0; j < neighbor_names.size(); ++j) {
+      std::string neighbor_str = Rcpp::as<std::string>(neighbor_names[j]);
+      std::vector<int> neighbor = parse_karyotype_string_abm(neighbor_str, expected_n_chr);
+      if (neighbor.empty()) {
+        Rcpp::stop("Invalid neighbor karyotype '%s' in `adjacency_r[['%s']]`.",
+                   neighbor_str.c_str(), source_str.c_str());
+      }
+      neighbors.push_back(neighbor);
+    }
+    out[source] = std::move(neighbors);
+  }
+  return out;
+}
+
+KaryotypeSet parse_karyotype_set_abm(Rcpp::CharacterVector karyotypes_r, int expected_n_chr, const char* arg_name) {
+  KaryotypeSet out;
+  for (int i = 0; i < karyotypes_r.size(); ++i) {
+    std::string k_str = Rcpp::as<std::string>(karyotypes_r[i]);
+    std::vector<int> cn = parse_karyotype_string_abm(k_str, expected_n_chr);
+    if (cn.empty()) {
+      Rcpp::stop("Invalid karyotype in `%s`: '%s'.", arg_name, k_str.c_str());
+    }
+    out.insert(cn);
+  }
+  if (out.empty()) {
+    Rcpp::stop("`%s` must contain at least one karyotype.", arg_name);
+  }
+  return out;
+}
+
+Rcpp::NumericVector population_to_named_vector_abm(const PopulationMap& population) {
+  Rcpp::NumericVector counts;
+  Rcpp::CharacterVector names;
+  for (const auto& pair : population) {
+    if (pair.second > 0) {
+      counts.push_back(static_cast<double>(pair.second));
+      names.push_back(karyotype_to_string_abm(pair.first));
+    }
+  }
+  if (counts.length() > 0) {
+    counts.names() = names;
+  }
+  return counts;
+}
+
+long long population_total_abm(const PopulationMap& population) {
+  long long total = 0;
+  for (const auto& pair : population) {
+    if (pair.second > 0) {
+      total += pair.second;
+    }
+  }
+  return total;
+}
+
+long long population_diversity_abm(const PopulationMap& population) {
+  long long diversity = 0;
+  for (const auto& pair : population) {
+    if (pair.second > 0) {
+      ++diversity;
+    }
+  }
+  return diversity;
+}
+
+long long transition_total_abm(const PopulationMap& population, const KaryotypeSet& transition_set) {
+  long long total = 0;
+  for (const auto& pair : population) {
+    if (pair.second > 0 && transition_set.count(pair.first) > 0) {
+      total += pair.second;
+    }
+  }
+  return total;
+}
+
+double transition_fraction_abm(const PopulationMap& population, const KaryotypeSet& transition_set) {
+  long long total = population_total_abm(population);
+  if (total <= 0) {
+    return 0.0;
+  }
+  return static_cast<double>(transition_total_abm(population, transition_set)) /
+    static_cast<double>(total);
+}
+
+void add_metric_row_abm(std::vector<std::string>& conditions,
+                        std::vector<int>& steps,
+                        std::vector<double>& times,
+                        std::vector<double>& totals,
+                        std::vector<double>& diversities,
+                        std::vector<double>& transition_totals,
+                        std::vector<double>& transition_fractions,
+                        const std::string& condition,
+                        int step,
+                        double dt,
+                        const PopulationMap& population,
+                        const KaryotypeSet& transition_set) {
+  conditions.push_back(condition);
+  steps.push_back(step);
+  times.push_back(static_cast<double>(step) * dt);
+  totals.push_back(static_cast<double>(population_total_abm(population)));
+  diversities.push_back(static_cast<double>(population_diversity_abm(population)));
+  transition_totals.push_back(static_cast<double>(transition_total_abm(population, transition_set)));
+  transition_fractions.push_back(transition_fraction_abm(population, transition_set));
+}
+
+PopulationMap transition_treatment_step_abm(
+    const PopulationMap& population,
+    const FitnessMap& untreated_fitness,
+    const FitnessMap& treated_fitness,
+    const AdjacencyMap& adjacency,
+    const KaryotypeSet& transition_set,
+    int step,
+    int tau1_step,
+    int tau2_step,
+    bool use_second_treatment,
+    double p_missegregation,
+    double base_death_rate,
+    double base_birth_rate,
+    double fitness_birth_scale,
+    double second_treatment_strength,
+    std::mt19937& rng_engine) {
+  PopulationMap after_death;
+  PopulationMap after_move;
+  PopulationMap next_population;
+  std::binomial_distribution<long long> binomial_dist;
+
+  for (const auto& pair : population) {
+    const std::vector<int>& k = pair.first;
+    long long count = pair.second;
+    if (count <= 0) {
+      continue;
+    }
+    bool second_active = use_second_treatment && tau2_step >= 0 &&
+      step >= tau2_step && transition_set.count(k) > 0;
+    double death_probability = base_death_rate +
+      (second_active ? second_treatment_strength : 0.0);
+    death_probability = clamp_probability(death_probability);
+    binomial_dist.param(typename std::binomial_distribution<long long>::param_type(
+      count, 1.0 - death_probability));
+    long long survivors = binomial_dist(rng_engine);
+    if (survivors > 0) {
+      after_death[k] += survivors;
+    }
+  }
+
+  for (const auto& pair : after_death) {
+    const std::vector<int>& k = pair.first;
+    long long count = pair.second;
+    if (count <= 0) {
+      continue;
+    }
+    binomial_dist.param(typename std::binomial_distribution<long long>::param_type(
+      count, p_missegregation));
+    long long movers = binomial_dist(rng_engine);
+    long long stayers = count - movers;
+    if (stayers > 0) {
+      after_move[k] += stayers;
+    }
+
+    auto adj_it = adjacency.find(k);
+    if (movers <= 0 || adj_it == adjacency.end() || adj_it->second.empty()) {
+      if (movers > 0) {
+        after_move[k] += movers;
+      }
+      continue;
+    }
+
+    const std::vector<std::vector<int>>& neighbors = adj_it->second;
+    std::uniform_int_distribution<std::size_t> neighbor_dist(0, neighbors.size() - 1);
+    for (long long i = 0; i < movers; ++i) {
+      after_move[neighbors[neighbor_dist(rng_engine)]] += 1;
+    }
+  }
+
+  const FitnessMap& active_fitness = step < tau1_step ? untreated_fitness : treated_fitness;
+  for (const auto& pair : after_move) {
+    const std::vector<int>& k = pair.first;
+    long long count = pair.second;
+    if (count <= 0) {
+      continue;
+    }
+    auto fit_it = active_fitness.find(k);
+    double fitness = fit_it == active_fitness.end() ? 0.0 : fit_it->second;
+    double birth_probability = clamp_probability(base_birth_rate + fitness_birth_scale * fitness);
+    binomial_dist.param(typename std::binomial_distribution<long long>::param_type(
+      count, birth_probability));
+    long long births = binomial_dist(rng_engine);
+    next_population[k] += count + births;
+  }
+
+  return next_population;
+}
+
+Rcpp::List simulate_transition_condition_abm(
+    const PopulationMap& initial_population,
+    const FitnessMap& untreated_fitness,
+    const FitnessMap& treated_fitness,
+    const AdjacencyMap& adjacency,
+    const KaryotypeSet& transition_set,
+    const std::string& condition,
+    int tau1_step,
+    int tau2_step,
+    bool use_second_treatment,
+    double p_missegregation,
+    double base_death_rate,
+    double base_birth_rate,
+    double fitness_birth_scale,
+    double second_treatment_strength,
+    double dt,
+    int n_steps,
+    int record_interval,
+    std::mt19937& rng_engine,
+    std::vector<std::string>& metric_conditions,
+    std::vector<int>& metric_steps,
+    std::vector<double>& metric_times,
+    std::vector<double>& metric_totals,
+    std::vector<double>& metric_diversities,
+    std::vector<double>& metric_transition_totals,
+    std::vector<double>& metric_transition_fractions) {
+  PopulationMap population = initial_population;
+  Rcpp::List records;
+  bool record_on_interval = record_interval >= 1;
+  int interval_every = record_on_interval ? record_interval : 1;
+
+  records.push_back(population_to_named_vector_abm(population), "0");
+  add_metric_row_abm(metric_conditions, metric_steps, metric_times, metric_totals,
+                     metric_diversities, metric_transition_totals,
+                     metric_transition_fractions, condition, 0, dt,
+                     population, transition_set);
+
+  for (int step = 1; step <= n_steps; ++step) {
+    if (!population.empty()) {
+      population = transition_treatment_step_abm(
+        population, untreated_fitness, treated_fitness, adjacency, transition_set,
+        step, tau1_step, tau2_step, use_second_treatment, p_missegregation,
+        base_death_rate, base_birth_rate, fitness_birth_scale,
+        second_treatment_strength, rng_engine);
+    }
+    if (record_on_interval && (step % interval_every == 0 || step == n_steps)) {
+      records.push_back(population_to_named_vector_abm(population), std::to_string(step));
+      add_metric_row_abm(metric_conditions, metric_steps, metric_times, metric_totals,
+                         metric_diversities, metric_transition_totals,
+                         metric_transition_fractions, condition, step, dt,
+                         population, transition_set);
+    }
+    Rcpp::checkUserInterrupt();
+  }
+  return records;
+}
+
+} // namespace
+
+// [[Rcpp::export]]
+Rcpp::List run_transition_treatment_abm(
+    Rcpp::List initial_population_r,
+    Rcpp::List untreated_fitness_map_r,
+    Rcpp::List treated_fitness_map_r,
+    Rcpp::List adjacency_r,
+    Rcpp::CharacterVector transition_karyotypes_r,
+    double p_missegregation,
+    double base_death_rate,
+    double base_birth_rate,
+    double fitness_birth_scale,
+    double second_treatment_strength,
+    int tau1_step,
+    double dt,
+    int n_steps,
+    int record_interval = 1,
+    int seed = -1) {
+  if (!R_finite(p_missegregation) || p_missegregation < 0.0 || p_missegregation > 1.0) {
+    Rcpp::stop("`p_missegregation` must be finite and in [0, 1].");
+  }
+  if (!R_finite(base_death_rate) || base_death_rate < 0.0 || base_death_rate > 1.0) {
+    Rcpp::stop("`base_death_rate` must be finite and in [0, 1].");
+  }
+  if (!R_finite(base_birth_rate) || base_birth_rate < 0.0 || base_birth_rate > 1.0) {
+    Rcpp::stop("`base_birth_rate` must be finite and in [0, 1].");
+  }
+  if (!R_finite(fitness_birth_scale)) {
+    Rcpp::stop("`fitness_birth_scale` must be finite.");
+  }
+  if (!R_finite(second_treatment_strength) || second_treatment_strength < 0.0 || second_treatment_strength > 1.0) {
+    Rcpp::stop("`second_treatment_strength` must be finite and in [0, 1].");
+  }
+  if (tau1_step < 0) {
+    Rcpp::stop("`tau1_step` must be non-negative.");
+  }
+  if (!R_finite(dt) || dt <= 0.0) {
+    Rcpp::stop("`dt` must be a positive finite value.");
+  }
+  if (n_steps < 0) {
+    Rcpp::stop("`n_steps` must be non-negative.");
+  }
+  if (record_interval <= 0) {
+    Rcpp::stop("`record_interval` must be positive.");
+  }
+
+  std::mt19937 tau_rng;
+  std::mt19937 condition1_rng;
+  std::mt19937 condition2_rng;
+  if (seed == -1) {
+    std::random_device rd;
+    unsigned int base_seed = rd();
+    tau_rng.seed(base_seed);
+    condition1_rng.seed(base_seed + 1U);
+    condition2_rng.seed(base_seed + 2U);
+  } else {
+    tau_rng.seed(static_cast<unsigned int>(seed));
+    condition1_rng.seed(static_cast<unsigned int>(seed) + 1U);
+    condition2_rng.seed(static_cast<unsigned int>(seed) + 2U);
+  }
+
+  int n_chr_types = -1;
+  PopulationMap initial_population = parse_population_list_abm(initial_population_r, n_chr_types);
+  FitnessMap untreated_fitness = parse_fitness_list_abm(untreated_fitness_map_r, n_chr_types, "untreated_fitness_map_r");
+  FitnessMap treated_fitness = parse_fitness_list_abm(treated_fitness_map_r, n_chr_types, "treated_fitness_map_r");
+  AdjacencyMap adjacency = parse_adjacency_list_abm(adjacency_r, n_chr_types);
+  KaryotypeSet transition_set = parse_karyotype_set_abm(transition_karyotypes_r, n_chr_types, "transition_karyotypes_r");
+
+  PopulationMap tau_population = initial_population;
+  int tau2_step = tau1_step;
+  double best_transition_fraction = -1.0;
+  for (int step = 1; step <= n_steps; ++step) {
+    if (!tau_population.empty()) {
+      tau_population = transition_treatment_step_abm(
+        tau_population, untreated_fitness, treated_fitness, adjacency, transition_set,
+        step, tau1_step, -1, false, p_missegregation, base_death_rate,
+        base_birth_rate, fitness_birth_scale, 0.0, tau_rng);
+    }
+    if (step >= tau1_step) {
+      double fraction = transition_fraction_abm(tau_population, transition_set);
+      if (fraction > best_transition_fraction) {
+        best_transition_fraction = fraction;
+        tau2_step = step;
+      }
+    }
+    Rcpp::checkUserInterrupt();
+  }
+
+  std::vector<std::string> metric_conditions;
+  std::vector<int> metric_steps;
+  std::vector<double> metric_times;
+  std::vector<double> metric_totals;
+  std::vector<double> metric_diversities;
+  std::vector<double> metric_transition_totals;
+  std::vector<double> metric_transition_fractions;
+
+  Rcpp::List condition1 = simulate_transition_condition_abm(
+    initial_population, untreated_fitness, treated_fitness, adjacency, transition_set,
+    "condition1_first_treatment_only", tau1_step, -1, false, p_missegregation,
+    base_death_rate, base_birth_rate, fitness_birth_scale, 0.0, dt, n_steps,
+    record_interval, condition1_rng, metric_conditions, metric_steps, metric_times,
+    metric_totals, metric_diversities, metric_transition_totals,
+    metric_transition_fractions);
+
+  Rcpp::List condition2 = simulate_transition_condition_abm(
+    initial_population, untreated_fitness, treated_fitness, adjacency, transition_set,
+    "condition2_second_treatment", tau1_step, tau2_step, true, p_missegregation,
+    base_death_rate, base_birth_rate, fitness_birth_scale, second_treatment_strength,
+    dt, n_steps, record_interval, condition2_rng, metric_conditions, metric_steps,
+    metric_times, metric_totals, metric_diversities, metric_transition_totals,
+    metric_transition_fractions);
+
+  Rcpp::DataFrame metrics = Rcpp::DataFrame::create(
+    Rcpp::Named("condition") = metric_conditions,
+    Rcpp::Named("step") = metric_steps,
+    Rcpp::Named("time") = metric_times,
+    Rcpp::Named("total_population") = metric_totals,
+    Rcpp::Named("diversity") = metric_diversities,
+    Rcpp::Named("transition_population") = metric_transition_totals,
+    Rcpp::Named("transition_fraction") = metric_transition_fractions,
+    Rcpp::Named("stringsAsFactors") = false);
+
+  double c1_final_pop = 0.0;
+  double c2_final_pop = 0.0;
+  double c1_final_diversity = 0.0;
+  double c2_final_diversity = 0.0;
+  for (std::size_t i = 0; i < metric_conditions.size(); ++i) {
+    if (metric_steps[i] == n_steps && metric_conditions[i] == "condition1_first_treatment_only") {
+      c1_final_pop = metric_totals[i];
+      c1_final_diversity = metric_diversities[i];
+    }
+    if (metric_steps[i] == n_steps && metric_conditions[i] == "condition2_second_treatment") {
+      c2_final_pop = metric_totals[i];
+      c2_final_diversity = metric_diversities[i];
+    }
+  }
+
+  double population_reduction_pct = c1_final_pop > 0.0
+    ? (1.0 - c2_final_pop / c1_final_pop) * 100.0
+    : NA_REAL;
+  double diversity_reduction_pct = c1_final_diversity > 0.0
+    ? (1.0 - c2_final_diversity / c1_final_diversity) * 100.0
+    : NA_REAL;
+
+  Rcpp::DataFrame endpoint_summary = Rcpp::DataFrame::create(
+    Rcpp::Named("tau2_step") = tau2_step,
+    Rcpp::Named("tau2_time") = static_cast<double>(tau2_step) * dt,
+    Rcpp::Named("tau2_transition_fraction") = best_transition_fraction,
+    Rcpp::Named("condition1_final_population") = c1_final_pop,
+    Rcpp::Named("condition2_final_population") = c2_final_pop,
+    Rcpp::Named("population_reduction_pct") = population_reduction_pct,
+    Rcpp::Named("condition1_final_diversity") = c1_final_diversity,
+    Rcpp::Named("condition2_final_diversity") = c2_final_diversity,
+    Rcpp::Named("diversity_reduction_pct") = diversity_reduction_pct);
+
+  return Rcpp::List::create(
+    Rcpp::Named("tau2_step") = tau2_step,
+    Rcpp::Named("tau2_time") = static_cast<double>(tau2_step) * dt,
+    Rcpp::Named("tau2_transition_fraction") = best_transition_fraction,
+    Rcpp::Named("condition1") = condition1,
+    Rcpp::Named("condition2") = condition2,
+    Rcpp::Named("metrics") = metrics,
+    Rcpp::Named("endpoint_summary") = endpoint_summary);
 }

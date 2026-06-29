@@ -277,6 +277,95 @@ test_that("ABM wrappers reject times that do not align with the ABM step grid", 
   )
 })
 
+test_that("transition treatment ABM returns tau2 and endpoint summaries", {
+  res <- alfakR:::run_transition_treatment_abm(
+    initial_population_r = stats::setNames(list(50, 50), c("2.2", "3.1")),
+    untreated_fitness_map_r = stats::setNames(as.list(c(0.2, 0.1, 0.05)), c("2.2", "3.1", "2.3")),
+    treated_fitness_map_r = stats::setNames(as.list(c(0.05, 0.2, 0.3)), c("2.2", "3.1", "2.3")),
+    adjacency_r = list("2.2" = c("3.1", "2.3"), "3.1" = c("2.2", "2.3"), "2.3" = c("2.2", "3.1")),
+    transition_karyotypes_r = "2.3",
+    p_missegregation = 0.02,
+    base_death_rate = 0.01,
+    base_birth_rate = 0.02,
+    fitness_birth_scale = 0.1,
+    second_treatment_strength = 0.9,
+    tau1_step = 31L,
+    dt = 1,
+    n_steps = 60L,
+    record_interval = 10L,
+    seed = 1L
+  )
+
+  expect_named(res, c(
+    "tau2_step", "tau2_time", "tau2_transition_fraction",
+    "condition1", "condition2", "metrics", "endpoint_summary"
+  ))
+  expect_true(res$tau2_step >= 31L)
+  expect_true(is.data.frame(res$metrics))
+  expect_true(is.data.frame(res$endpoint_summary))
+  expect_true(all(c("total_population", "diversity", "transition_fraction") %in% names(res$metrics)))
+  expect_true(is.finite(res$endpoint_summary$population_reduction_pct))
+})
+
+test_that("transition treatment wrapper initializes on untreated peaks and targets top ranked transitions", {
+  node_metadata <- data.frame(
+    karyotype = c("2.2", "3.1", "2.3", "1.3"),
+    untreated_fitness = c(0.2, 0.1, 0.05, 0.03),
+    treated_fitness = c(0.05, 0.2, 0.3, 0.25),
+    is_untreated_peak = c(TRUE, TRUE, FALSE, FALSE),
+    transition_rank = c(NA, NA, 2, 1),
+    stringsAsFactors = FALSE
+  )
+  edges <- data.frame(
+    from = c("2.2", "3.1", "2.3"),
+    to = c("2.3", "2.3", "1.3"),
+    stringsAsFactors = FALSE
+  )
+
+  captured <- NULL
+  testthat::with_mocked_bindings(
+    {
+      res <- alfakR::run_transition_karyotype_abm(
+        node_metadata = node_metadata,
+        edges = edges,
+        times = c(0, 1),
+        tau1 = 0,
+        transition_top_n = 1,
+        abm_pop_size = 100,
+        abm_delta_t = 1,
+        abm_seed = 1
+      )
+      expect_identical(res$inputs$transition_karyotypes, "1.3")
+      expect_identical(res$inputs$initial_untreated_peaks, c("2.2", "3.1"))
+    },
+    run_transition_treatment_abm = function(initial_population_r, untreated_fitness_map_r,
+                                            treated_fitness_map_r, adjacency_r,
+                                            transition_karyotypes_r, ...) {
+      captured <<- list(
+        initial_population_r = initial_population_r,
+        transition_karyotypes_r = transition_karyotypes_r,
+        adjacency_r = adjacency_r
+      )
+      list(
+        tau2_step = 1L,
+        tau2_time = 1,
+        tau2_transition_fraction = 0,
+        condition1 = list("0" = stats::setNames(c(50, 50), c("2.2", "3.1"))),
+        condition2 = list("0" = stats::setNames(c(50, 50), c("2.2", "3.1"))),
+        metrics = data.frame(),
+        endpoint_summary = data.frame()
+      )
+    },
+    .package = "alfakR"
+  )
+
+  expect_identical(names(captured$initial_population_r), c("2.2", "3.1"))
+  expect_equal(as.numeric(unlist(captured$initial_population_r)), c(50, 50))
+  expect_identical(captured$transition_karyotypes_r, "1.3")
+  expect_true("2.2" %in% names(captured$adjacency_r))
+  expect_true("2.3" %in% captured$adjacency_r[["2.2"]])
+})
+
 test_that("chrmod kernels validate transition-matrix shape and still accept legal inputs", {
   expect_error(
     alfakR:::chrmod_cpp(0, c(0.5, 0.5), list()),

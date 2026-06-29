@@ -5,6 +5,10 @@ run_karyotype_abm <- function(initial_population_r, fitness_map_r, p_missegregat
     .Call(`_alfakR_run_karyotype_abm`, initial_population_r, fitness_map_r, p_missegregation, dt, n_steps, max_population_size, culling_survival_fraction, record_interval, seed, grf_centroids, grf_lambda)
 }
 
+run_transition_treatment_abm <- function(initial_population_r, untreated_fitness_map_r, treated_fitness_map_r, adjacency_r, transition_karyotypes_r, p_missegregation, base_death_rate, base_birth_rate, fitness_birth_scale, second_treatment_strength, tau1_step, dt, n_steps, record_interval = 1L, seed = -1L) {
+    .Call(`_alfakR_run_transition_treatment_abm`, initial_population_r, untreated_fitness_map_r, treated_fitness_map_r, adjacency_r, transition_karyotypes_r, p_missegregation, base_death_rate, base_birth_rate, fitness_birth_scale, second_treatment_strength, tau1_step, dt, n_steps, record_interval, seed)
+}
+
 alfak_project_forward_log_cpp <- function(x0, f, timepoints) {
     .Call(`_alfakR_alfak_project_forward_log_cpp`, x0, f, timepoints)
 }

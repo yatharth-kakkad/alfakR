@@ -34,6 +34,31 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// run_transition_treatment_abm
+Rcpp::List run_transition_treatment_abm(Rcpp::List initial_population_r, Rcpp::List untreated_fitness_map_r, Rcpp::List treated_fitness_map_r, Rcpp::List adjacency_r, Rcpp::CharacterVector transition_karyotypes_r, double p_missegregation, double base_death_rate, double base_birth_rate, double fitness_birth_scale, double second_treatment_strength, int tau1_step, double dt, int n_steps, int record_interval, int seed);
+RcppExport SEXP _alfakR_run_transition_treatment_abm(SEXP initial_population_rSEXP, SEXP untreated_fitness_map_rSEXP, SEXP treated_fitness_map_rSEXP, SEXP adjacency_rSEXP, SEXP transition_karyotypes_rSEXP, SEXP p_missegregationSEXP, SEXP base_death_rateSEXP, SEXP base_birth_rateSEXP, SEXP fitness_birth_scaleSEXP, SEXP second_treatment_strengthSEXP, SEXP tau1_stepSEXP, SEXP dtSEXP, SEXP n_stepsSEXP, SEXP record_intervalSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::List >::type initial_population_r(initial_population_rSEXP);
+    Rcpp::traits::input_parameter< Rcpp::List >::type untreated_fitness_map_r(untreated_fitness_map_rSEXP);
+    Rcpp::traits::input_parameter< Rcpp::List >::type treated_fitness_map_r(treated_fitness_map_rSEXP);
+    Rcpp::traits::input_parameter< Rcpp::List >::type adjacency_r(adjacency_rSEXP);
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type transition_karyotypes_r(transition_karyotypes_rSEXP);
+    Rcpp::traits::input_parameter< double >::type p_missegregation(p_missegregationSEXP);
+    Rcpp::traits::input_parameter< double >::type base_death_rate(base_death_rateSEXP);
+    Rcpp::traits::input_parameter< double >::type base_birth_rate(base_birth_rateSEXP);
+    Rcpp::traits::input_parameter< double >::type fitness_birth_scale(fitness_birth_scaleSEXP);
+    Rcpp::traits::input_parameter< double >::type second_treatment_strength(second_treatment_strengthSEXP);
+    Rcpp::traits::input_parameter< int >::type tau1_step(tau1_stepSEXP);
+    Rcpp::traits::input_parameter< double >::type dt(dtSEXP);
+    Rcpp::traits::input_parameter< int >::type n_steps(n_stepsSEXP);
+    Rcpp::traits::input_parameter< int >::type record_interval(record_intervalSEXP);
+    Rcpp::traits::input_parameter< int >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(run_transition_treatment_abm(initial_population_r, untreated_fitness_map_r, treated_fitness_map_r, adjacency_r, transition_karyotypes_r, p_missegregation, base_death_rate, base_birth_rate, fitness_birth_scale, second_treatment_strength, tau1_step, dt, n_steps, record_interval, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
 // alfak_project_forward_log_cpp
 Rcpp::NumericMatrix alfak_project_forward_log_cpp(Rcpp::NumericVector x0, Rcpp::NumericVector f, Rcpp::NumericVector timepoints);
 RcppExport SEXP _alfakR_alfak_project_forward_log_cpp(SEXP x0SEXP, SEXP fSEXP, SEXP timepointsSEXP) {
@@ -126,7 +151,7 @@ RcppExport SEXP _alfakR_pij_cpp(SEXP iSEXP, SEXP jSEXP, SEXP betaSEXP) {
     if (rcpp_isError_gen) {
         SEXP rcpp_msgSEXP_gen = Rf_asChar(rcpp_result_gen);
         UNPROTECT(1);
-        Rf_error("%s", CHAR(rcpp_msgSEXP_gen));
+        (Rf_error)("%s", CHAR(rcpp_msgSEXP_gen));
     }
     UNPROTECT(1);
     return rcpp_result_gen;
@@ -162,7 +187,7 @@ RcppExport SEXP _alfakR_get_A_inputs(SEXP k_strSEXP, SEXP betaSEXP, SEXP Nmax_SE
     if (rcpp_isError_gen) {
         SEXP rcpp_msgSEXP_gen = Rf_asChar(rcpp_result_gen);
         UNPROTECT(1);
-        Rf_error("%s", CHAR(rcpp_msgSEXP_gen));
+        (Rf_error)("%s", CHAR(rcpp_msgSEXP_gen));
     }
     UNPROTECT(1);
     return rcpp_result_gen;
@@ -198,7 +223,7 @@ RcppExport SEXP _alfakR_chrmod_cpp(SEXP timeSEXP, SEXP stateSEXP, SEXP parmsSEXP
     if (rcpp_isError_gen) {
         SEXP rcpp_msgSEXP_gen = Rf_asChar(rcpp_result_gen);
         UNPROTECT(1);
-        Rf_error("%s", CHAR(rcpp_msgSEXP_gen));
+        (Rf_error)("%s", CHAR(rcpp_msgSEXP_gen));
     }
     UNPROTECT(1);
     return rcpp_result_gen;
@@ -234,7 +259,7 @@ RcppExport SEXP _alfakR_chrmod_rel_cpp(SEXP timeSEXP, SEXP xSEXP, SEXP parmsSEXP
     if (rcpp_isError_gen) {
         SEXP rcpp_msgSEXP_gen = Rf_asChar(rcpp_result_gen);
         UNPROTECT(1);
-        Rf_error("%s", CHAR(rcpp_msgSEXP_gen));
+        (Rf_error)("%s", CHAR(rcpp_msgSEXP_gen));
     }
     UNPROTECT(1);
     return rcpp_result_gen;
@@ -264,6 +289,7 @@ RcppExport SEXP _alfakR_RcppExport_registerCCallable() {
 
 static const R_CallMethodDef CallEntries[] = {
     {"_alfakR_run_karyotype_abm", (DL_FUNC) &_alfakR_run_karyotype_abm, 11},
+    {"_alfakR_run_transition_treatment_abm", (DL_FUNC) &_alfakR_run_transition_treatment_abm, 15},
     {"_alfakR_alfak_project_forward_log_cpp", (DL_FUNC) &_alfakR_alfak_project_forward_log_cpp, 3},
     {"_alfakR_alfak_neg_log_lik_cpp", (DL_FUNC) &_alfakR_alfak_neg_log_lik_cpp, 3},
     {"_alfakR_alfak_neighbor_objective_cpp", (DL_FUNC) &_alfakR_alfak_neighbor_objective_cpp, 13},
