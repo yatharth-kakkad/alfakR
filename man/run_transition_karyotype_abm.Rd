@@ -39,9 +39,10 @@ the karyotype graph.}
 \code{abm_delta_t}; the ABM runs from step 0 up to this time and records every
 \code{abm_record_interval} steps.}
 
-\item{transition_scores}{Data frame, or path to a CSV, with \code{karyotype} and
-\code{transition_score} columns; the top \code{transition_top_n} targets are selected
-from this file's ranking.}
+\item{transition_scores}{Data frame, or path to a CSV, with either the
+canonical columns \code{karyotype}/\code{transition_score}, or the report-export
+columns \code{Transition_Karyotypes}/\code{n}; the top \code{transition_top_n} targets
+are selected from this file's ranking.}
 
 \item{transition_top_n}{Number of highest-ranked transition karyotypes to target.}
 

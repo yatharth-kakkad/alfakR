@@ -515,8 +515,17 @@ fill_missing_transition_fitness <- function(node_metadata, missing_fitness_value
 
 apply_transition_scores <- function(node_metadata, transition_scores) {
   transition_scores <- read_transition_csv(transition_scores)
-  if (!is.data.frame(transition_scores) || !all(c("karyotype", "transition_score") %in% names(transition_scores))) {
-    stop("`transition_scores` must contain `karyotype` and `transition_score` columns.", call. = FALSE)
+  if (!is.data.frame(transition_scores)) {
+    stop("`transition_scores` must be a data.frame or path to a CSV.", call. = FALSE)
+  }
+  if (!"karyotype" %in% names(transition_scores) && "Transition_Karyotypes" %in% names(transition_scores)) {
+    transition_scores$karyotype <- transition_scores$Transition_Karyotypes
+  }
+  if (!"transition_score" %in% names(transition_scores) && "n" %in% names(transition_scores)) {
+    transition_scores$transition_score <- transition_scores$n
+  }
+  if (!all(c("karyotype", "transition_score") %in% names(transition_scores))) {
+    stop("`transition_scores` must contain `karyotype` and `transition_score` columns (or their report-export aliases `Transition_Karyotypes` and `n`).", call. = FALSE)
   }
   transition_scores$karyotype <- as.character(transition_scores$karyotype)
   transition_scores$transition_score <- as.numeric(transition_scores$transition_score)
@@ -619,9 +628,10 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #'   `treated_pct_rank`.
 #' @param edges Data frame, or path to a CSV, with from/to columns describing
 #'   the karyotype graph.
-#' @param transition_scores Data frame, or path to a CSV, with `karyotype` and
-#'   `transition_score` columns; the top `transition_top_n` targets are selected
-#'   from this file's ranking.
+#' @param transition_scores Data frame, or path to a CSV, with either the
+#'   canonical columns `karyotype`/`transition_score`, or the report-export
+#'   columns `Transition_Karyotypes`/`n`; the top `transition_top_n` targets
+#'   are selected from this file's ranking.
 #' @param missing_fitness_value Value used when a node is absent from one
 #'   condition-specific ALFA-K landscape and therefore has missing fitness in
 #'   that condition. Default is `0`, meaning baseline birth only.
