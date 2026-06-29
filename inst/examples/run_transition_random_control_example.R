@@ -28,7 +28,7 @@ common_args <- list(
   node_metadata = node_metadata_path,
   edges = edges_path,
   transition_scores = transition_scores_path,
-  horizon_timestep = 180,
+  horizon_timestep = 200,
   transition_top_n = 10,
   null_model = TRUE,
   tau1 = 30,
@@ -38,10 +38,10 @@ common_args <- list(
   fitness_birth_scale = 0.1,
   second_treatment_strength = 0.9,
   abm_delta_t = 1,
-  abm_record_interval = 18
+  abm_record_interval = 20
 )
 
-seeds <- 1:20
+seeds <- 1:50
 rows <- lapply(seeds, function(s) {
   result <- do.call(run_transition_karyotype_abm, c(common_args, list(abm_seed = s)))
   es <- result$endpoint_summary
@@ -61,33 +61,22 @@ rows <- lapply(seeds, function(s) {
 })
 per_seed <- do.call(rbind, rows)
 
-panel_summary <- data.frame(
-  panel = c("condition1_no_second_treatment", "condition2_ranked_transition_targets", "condition3_random_panel_null"),
-  mean_final_population = c(
-    mean(per_seed$condition1_final_population),
-    mean(per_seed$ranked_final_population),
-    mean(per_seed$random_final_population)
-  ),
-  sd_final_population = c(
-    stats::sd(per_seed$condition1_final_population),
-    stats::sd(per_seed$ranked_final_population),
-    stats::sd(per_seed$random_final_population)
-  ),
-  mean_final_diversity = c(
-    mean(per_seed$condition1_final_diversity),
-    mean(per_seed$ranked_final_diversity),
-    mean(per_seed$random_final_diversity)
-  ),
-  sd_final_diversity = c(
-    stats::sd(per_seed$condition1_final_diversity),
-    stats::sd(per_seed$ranked_final_diversity),
-    stats::sd(per_seed$random_final_diversity)
-  ),
-  mean_population_reduction_pct_vs_c1 = c(NA, mean(per_seed$ranked_population_reduction_pct), mean(per_seed$random_population_reduction_pct)),
-  sd_population_reduction_pct_vs_c1 = c(NA, stats::sd(per_seed$ranked_population_reduction_pct), stats::sd(per_seed$random_population_reduction_pct)),
-  mean_diversity_reduction_pct_vs_c1 = c(NA, mean(per_seed$ranked_diversity_reduction_pct), mean(per_seed$random_diversity_reduction_pct)),
-  sd_diversity_reduction_pct_vs_c1 = c(NA, stats::sd(per_seed$ranked_diversity_reduction_pct), stats::sd(per_seed$random_diversity_reduction_pct))
+panel_cols <- list(
+  condition1_no_second_treatment = c("condition1_final_population", "condition1_final_diversity", NA, NA),
+  condition2_ranked_transition_targets = c("ranked_final_population", "ranked_final_diversity",
+                                            "ranked_population_reduction_pct", "ranked_diversity_reduction_pct"),
+  condition3_random_panel_null = c("random_final_population", "random_final_diversity",
+                                    "random_population_reduction_pct", "random_diversity_reduction_pct")
 )
+stat_pair <- function(col) if (is.na(col)) c(NA, NA) else c(mean(per_seed[[col]]), stats::sd(per_seed[[col]]))
+panel_summary <- do.call(rbind, lapply(names(panel_cols), function(panel) {
+  cols <- panel_cols[[panel]]
+  stats <- do.call(c, lapply(cols, stat_pair))
+  data.frame(panel = panel, mean_final_population = stats[1], sd_final_population = stats[2],
+             mean_final_diversity = stats[3], sd_final_diversity = stats[4],
+             mean_population_reduction_pct_vs_c1 = stats[5], sd_population_reduction_pct_vs_c1 = stats[6],
+             mean_diversity_reduction_pct_vs_c1 = stats[7], sd_diversity_reduction_pct_vs_c1 = stats[8])
+}))
 
 print(panel_summary)
 

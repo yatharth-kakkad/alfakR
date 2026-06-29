@@ -483,20 +483,29 @@ read_transition_csv <- function(x) {
   x
 }
 
+# Renames each `names(aliases)[i]` column from `aliases[[i]]` whenever the
+# canonical name is absent but the alias is present, e.g. report-export CSVs
+# that use `name`/`untreated_mean` instead of `karyotype`/`untreated_fitness`.
+apply_column_aliases <- function(df, aliases) {
+  for (canonical in names(aliases)) {
+    alias <- aliases[[canonical]]
+    if (!canonical %in% names(df) && alias %in% names(df)) {
+      df[[canonical]] <- df[[alias]]
+    }
+  }
+  df
+}
+
 standardize_transition_node_metadata <- function(node_metadata, untreated_peak_percentile = 99) {
   node_metadata <- read_transition_csv(node_metadata)
   if (!is.data.frame(node_metadata)) {
     stop("`node_metadata` must be a data.frame or path to a CSV.", call. = FALSE)
   }
-  if (!"karyotype" %in% names(node_metadata) && "name" %in% names(node_metadata)) {
-    node_metadata$karyotype <- node_metadata$name
-  }
-  if (!"untreated_fitness" %in% names(node_metadata) && "untreated_mean" %in% names(node_metadata)) {
-    node_metadata$untreated_fitness <- node_metadata$untreated_mean
-  }
-  if (!"treated_fitness" %in% names(node_metadata) && "treated_mean" %in% names(node_metadata)) {
-    node_metadata$treated_fitness <- node_metadata$treated_mean
-  }
+  node_metadata <- apply_column_aliases(node_metadata, list(
+    karyotype = "name",
+    untreated_fitness = "untreated_mean",
+    treated_fitness = "treated_mean"
+  ))
   if (!"is_untreated_peak" %in% names(node_metadata) && "untreated_pct_rank" %in% names(node_metadata)) {
     untreated_rank <- as.numeric(node_metadata$untreated_pct_rank)
     node_metadata$is_untreated_peak <- is.finite(untreated_rank) & untreated_rank >= untreated_peak_percentile
@@ -528,16 +537,13 @@ impute_fitness_column <- function(values, karyotypes, adjacency, name) {
 }
 
 fill_missing_transition_fitness <- function(node_metadata, adjacency) {
-  untreated <- impute_fitness_column(
-    node_metadata$untreated_fitness, node_metadata$karyotype, adjacency, "node_metadata$untreated_fitness"
-  )
-  treated <- impute_fitness_column(
-    node_metadata$treated_fitness, node_metadata$karyotype, adjacency, "node_metadata$treated_fitness"
-  )
-  node_metadata$untreated_fitness <- untreated$values
-  node_metadata$treated_fitness <- treated$values
-  node_metadata$untreated_fitness_imputed <- untreated$imputed
-  node_metadata$treated_fitness_imputed <- treated$imputed
+  for (col in c("untreated_fitness", "treated_fitness")) {
+    imputed <- impute_fitness_column(
+      node_metadata[[col]], node_metadata$karyotype, adjacency, paste0("node_metadata$", col)
+    )
+    node_metadata[[col]] <- imputed$values
+    node_metadata[[paste0(col, "_imputed")]] <- imputed$imputed
+  }
   node_metadata
 }
 
@@ -546,12 +552,10 @@ apply_transition_scores <- function(node_metadata, transition_scores) {
   if (!is.data.frame(transition_scores)) {
     stop("`transition_scores` must be a data.frame or path to a CSV.", call. = FALSE)
   }
-  if (!"karyotype" %in% names(transition_scores) && "Transition_Karyotypes" %in% names(transition_scores)) {
-    transition_scores$karyotype <- transition_scores$Transition_Karyotypes
-  }
-  if (!"transition_score" %in% names(transition_scores) && "n" %in% names(transition_scores)) {
-    transition_scores$transition_score <- transition_scores$n
-  }
+  transition_scores <- apply_column_aliases(transition_scores, list(
+    karyotype = "Transition_Karyotypes",
+    transition_score = "n"
+  ))
   if (!all(c("karyotype", "transition_score") %in% names(transition_scores))) {
     stop("`transition_scores` must contain `karyotype` and `transition_score` columns (or their report-export aliases `Transition_Karyotypes` and `n`).", call. = FALSE)
   }
@@ -643,6 +647,82 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
   adjacency
 }
 
+# Standardizes node_metadata, attaches transition ranks, builds the
+# Von Neumann adjacency list, and imputes any missing fitness values. This is
+# the full metadata/graph preparation pipeline shared by every condition the
+# treatment ABM runs.
+prepare_transition_graph <- function(node_metadata, edges, transition_scores,
+                                     undirected_edges, untreated_peak_percentile) {
+  node_metadata <- standardize_transition_node_metadata(node_metadata, untreated_peak_percentile)
+  node_metadata <- apply_transition_scores(node_metadata, transition_scores)
+  edges <- validate_transition_edges(edges, node_metadata$karyotype)
+  adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
+  node_metadata <- fill_missing_transition_fitness(node_metadata, adjacency)
+  node_metadata <- validate_transition_node_metadata(node_metadata)
+  list(node_metadata = node_metadata, adjacency = adjacency)
+}
+
+# Top `n` karyotypes by transition rank (lowest rank = most central).
+select_ranked_transition_targets <- function(node_metadata, n) {
+  candidates <- node_metadata[is.finite(node_metadata$transition_rank), , drop = FALSE]
+  candidates <- candidates[order(candidates$transition_rank), , drop = FALSE]
+  if (!nrow(candidates)) {
+    stop("`node_metadata$transition_rank` must identify at least one transition karyotype.", call. = FALSE)
+  }
+  utils::head(candidates$karyotype, n)
+}
+
+# A null-model panel of `n` karyotypes drawn uniformly from the full
+# karyotype list, without disturbing the caller's global RNG state.
+sample_null_model_targets <- function(karyotypes, n, seed) {
+  validate_cpp_integerish_scalar(seed, "null_model_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
+  rng_state <- if (exists(".Random.seed", envir = .GlobalEnv)) get(".Random.seed", envir = .GlobalEnv) else NULL
+  on.exit(if (!is.null(rng_state)) assign(".Random.seed", rng_state, envir = .GlobalEnv))
+  if (seed >= 0) set.seed(seed)
+  sample(karyotypes, min(n, length(karyotypes)))
+}
+
+# One cell per untreated peak by default, or `abm_pop_size` cells allocated
+# proportionally across the peaks.
+build_initial_population <- function(initial_peaks, abm_pop_size) {
+  if (is.null(abm_pop_size)) {
+    return(list(
+      initial_pop = stats::setNames(as.list(rep(1, length(initial_peaks))), initial_peaks),
+      effective_abm_pop_size = length(initial_peaks)
+    ))
+  }
+  x0 <- stats::setNames(rep(1 / length(initial_peaks), length(initial_peaks)), initial_peaks)
+  list(
+    initial_pop = prepare_abm_initial_population(x0, abm_pop_size),
+    effective_abm_pop_size = abm_pop_size
+  )
+}
+
+# `1 - value / baseline`, as a percentage; NA when there is no baseline to
+# compare against (mirrors the reduction-percentage convention already used
+# for condition2 in run_transition_treatment_abm()'s endpoint_summary).
+pct_reduction <- function(baseline, value) {
+  if (baseline > 0) (1 - value / baseline) * 100 else NA_real_
+}
+
+# Appends a null-model run's condition2 onto `result` as condition3, reusing
+# result's own condition1 baseline for the reduction percentages so the two
+# second-treatment conditions are directly comparable.
+merge_null_model_condition <- function(result, null_result) {
+  result$condition3 <- null_result$condition2
+  null_metrics <- null_result$metrics[null_result$metrics$condition == "condition2_second_treatment", , drop = FALSE]
+  null_metrics$condition <- "condition3_null_model"
+  result$metrics <- rbind(result$metrics, null_metrics)
+
+  es <- result$endpoint_summary
+  es$condition3_final_population <- null_result$endpoint_summary$condition2_final_population
+  es$condition3_final_diversity <- null_result$endpoint_summary$condition2_final_diversity
+  es$null_model_population_reduction_pct <- pct_reduction(es$condition1_final_population, es$condition3_final_population)
+  es$null_model_diversity_reduction_pct <- pct_reduction(es$condition1_final_diversity, es$condition3_final_diversity)
+  result$endpoint_summary <- es
+  result
+}
+
 #' Run transition-karyotype treatment ABM
 #'
 #' Implements the report ABM update order: death, graph-neighbor
@@ -722,15 +802,11 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
     stop("`untreated_peak_percentile` must be between 0 and 100.", call. = FALSE)
   }
   validate_scalar_logical(undirected_edges, "undirected_edges")
-  node_metadata <- standardize_transition_node_metadata(
-    node_metadata,
-    untreated_peak_percentile = untreated_peak_percentile
-  )
-  node_metadata <- apply_transition_scores(node_metadata, transition_scores = transition_scores)
-  edges <- validate_transition_edges(edges, node_metadata$karyotype)
-  adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
-  node_metadata <- fill_missing_transition_fitness(node_metadata, adjacency)
-  node_metadata <- validate_transition_node_metadata(node_metadata)
+
+  graph <- prepare_transition_graph(node_metadata, edges, transition_scores, undirected_edges, untreated_peak_percentile)
+  node_metadata <- graph$node_metadata
+  adjacency <- graph$adjacency
+
   validate_scalar_finite_number(horizon_timestep, "horizon_timestep")
   if (horizon_timestep < 0) stop("`horizon_timestep` must be non-negative.", call. = FALSE)
   validate_positive_finite(abm_delta_t, "abm_delta_t")
@@ -738,10 +814,9 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
   if (!is.null(abm_pop_size)) {
     validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
   }
-  validate_probability_closed(p_missegregation, "p_missegregation")
-  validate_probability_closed(base_death_rate, "base_death_rate")
-  validate_probability_closed(base_birth_rate, "base_birth_rate")
-  validate_probability_closed(second_treatment_strength, "second_treatment_strength")
+  for (rate_name in c("p_missegregation", "base_death_rate", "base_birth_rate", "second_treatment_strength")) {
+    validate_probability_closed(get(rate_name), rate_name)
+  }
   validate_scalar_finite_number(fitness_birth_scale, "fitness_birth_scale")
   validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
   validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
@@ -760,32 +835,19 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
     stop("`node_metadata` must mark at least one untreated peak with `is_untreated_peak = TRUE`.", call. = FALSE)
   }
 
-  transition_candidates <- node_metadata[is.finite(node_metadata$transition_rank), , drop = FALSE]
-  transition_candidates <- transition_candidates[order(transition_candidates$transition_rank), , drop = FALSE]
-  if (!nrow(transition_candidates)) {
-    stop("`node_metadata$transition_rank` must identify at least one transition karyotype.", call. = FALSE)
-  }
-  transition_karyotypes <- utils::head(transition_candidates$karyotype, transition_top_n)
-
-  null_model_karyotypes <- NULL
-  if (null_model) {
-    effective_null_seed <- if (is.null(null_model_seed)) abm_seed else null_model_seed
-    validate_cpp_integerish_scalar(effective_null_seed, "null_model_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
-    rng_state <- if (exists(".Random.seed", envir = .GlobalEnv)) get(".Random.seed", envir = .GlobalEnv) else NULL
-    if (effective_null_seed >= 0) set.seed(effective_null_seed)
-    null_model_karyotypes <- sample(node_metadata$karyotype, min(transition_top_n, nrow(node_metadata)))
-    if (!is.null(rng_state)) assign(".Random.seed", rng_state, envir = .GlobalEnv)
-  }
-
-  if (is.null(abm_pop_size)) {
-    initial_pop <- stats::setNames(as.list(rep(1, length(initial_peaks))), initial_peaks)
-    effective_abm_pop_size <- length(initial_peaks)
+  transition_karyotypes <- select_ranked_transition_targets(node_metadata, transition_top_n)
+  null_model_karyotypes <- if (null_model) {
+    sample_null_model_targets(
+      node_metadata$karyotype, transition_top_n,
+      seed = if (is.null(null_model_seed)) abm_seed else null_model_seed
+    )
   } else {
-    x0 <- rep(1 / length(initial_peaks), length(initial_peaks))
-    names(x0) <- initial_peaks
-    initial_pop <- prepare_abm_initial_population(x0, abm_pop_size)
-    effective_abm_pop_size <- abm_pop_size
+    NULL
   }
+
+  pop <- build_initial_population(initial_peaks, abm_pop_size)
+  initial_pop <- pop$initial_pop
+  effective_abm_pop_size <- pop$effective_abm_pop_size
 
   untreated_fitness <- stats::setNames(as.list(node_metadata$untreated_fitness), node_metadata$karyotype)
   treated_fitness <- stats::setNames(as.list(node_metadata$treated_fitness), node_metadata$karyotype)
@@ -811,21 +873,8 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
   }
 
   result <- run_abm(transition_karyotypes)
-
   if (null_model) {
-    null_result <- run_abm(null_model_karyotypes)
-    result$condition3 <- null_result$condition2
-    null_metrics <- null_result$metrics[null_result$metrics$condition == "condition2_second_treatment", , drop = FALSE]
-    null_metrics$condition <- "condition3_null_model"
-    result$metrics <- rbind(result$metrics, null_metrics)
-    result$endpoint_summary$condition3_final_population <- null_result$endpoint_summary$condition2_final_population
-    result$endpoint_summary$condition3_final_diversity <- null_result$endpoint_summary$condition2_final_diversity
-    c1_pop <- result$endpoint_summary$condition1_final_population
-    c1_div <- result$endpoint_summary$condition1_final_diversity
-    result$endpoint_summary$null_model_population_reduction_pct <-
-      if (c1_pop > 0) (1 - result$endpoint_summary$condition3_final_population / c1_pop) * 100 else NA_real_
-    result$endpoint_summary$null_model_diversity_reduction_pct <-
-      if (c1_div > 0) (1 - result$endpoint_summary$condition3_final_diversity / c1_div) * 100 else NA_real_
+    result <- merge_null_model_condition(result, run_abm(null_model_karyotypes))
   }
 
   imputed_fitness <- stats::setNames(
