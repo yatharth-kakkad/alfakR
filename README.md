@@ -84,6 +84,39 @@ Included example outputs:
 - `inst/extdata/transition_top10_example_endpoint_summary.csv`
 - `inst/extdata/transition_top10_example_metrics.csv`
 
+### Random-panel null-model example
+
+`run_transition_karyotype_abm()` also accepts `null_model = TRUE`, which
+runs a third condition in the same call: the second treatment targets a
+random sample of `transition_top_n` karyotypes drawn from the full
+karyotype list, instead of the ranked transition targets. This gives a
+specificity control for condition 2 without a separate call or script.
+
+A reproducible example script is included at:
+
+``` sh
+Rscript inst/examples/run_transition_random_control_example.R
+```
+
+It runs 50 replicate seeds at `horizon_timestep = 200` (otherwise the same
+settings as the top-10 example above) and reports the mean and SD of the
+final population/diversity and reduction percentages for each condition:
+
+| panel | mean final population (±SD) | mean final diversity (±SD) | mean pop. reduction vs c1 | mean diversity reduction vs c1 |
+|---|---|---|---|---|
+| condition1 — no second treatment | 195,049 ± 39,846 | 4,050.8 ± 249.9 | — | — |
+| condition2 — ranked transition targets | 135,895 ± 29,378 | 3,746.6 ± 284.5 | +26.8% ± 23.6 | +7.1% ± 9.9 |
+| condition3 — random panel (null) | 196,558 ± 37,609 | 4,054.1 ± 246.9 | −5.6% ± 32.3 | −0.5% ± 9.6 |
+
+Ranked transition-karyotype targeting reliably reduces both population
+and diversity relative to no second treatment, while a random panel of
+the same size averages to no effect.
+
+Included example outputs:
+
+- `inst/extdata/transition_random_control_example_per_seed.csv`
+- `inst/extdata/transition_random_control_example_summary.csv`
+
 ## Demonstrating `predict_evo`
 
 We will simulate the evolution of karyotype frequencies under different
