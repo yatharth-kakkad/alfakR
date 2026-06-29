@@ -313,12 +313,16 @@ test_that("transition treatment wrapper initializes on untreated peaks and targe
     untreated_fitness = c(0.2, 0.1, 0.05, 0.03),
     treated_fitness = c(0.05, 0.2, 0.3, 0.25),
     is_untreated_peak = c(TRUE, TRUE, FALSE, FALSE),
-    transition_rank = c(NA, NA, 2, 1),
     stringsAsFactors = FALSE
   )
   edges <- data.frame(
     from = c("2.2", "3.1", "2.3"),
     to = c("2.3", "2.3", "1.3"),
+    stringsAsFactors = FALSE
+  )
+  transition_scores <- data.frame(
+    karyotype = c("1.3", "2.3"),
+    transition_score = c(2, 1),
     stringsAsFactors = FALSE
   )
 
@@ -328,9 +332,10 @@ test_that("transition treatment wrapper initializes on untreated peaks and targe
       res <- alfakR::run_transition_karyotype_abm(
         node_metadata = node_metadata,
         edges = edges,
-        times = c(0, 1),
-        tau1 = 0,
+        horizon_timestep = 1,
+        transition_scores = transition_scores,
         transition_top_n = 1,
+        tau1 = 0,
         abm_delta_t = 1,
         abm_seed = 1
       )
@@ -371,12 +376,16 @@ test_that("transition treatment wrapper passes tau1 at the report treatment step
     untreated_fitness = c(0.2, 0.1, 0.05),
     treated_fitness = c(0.05, 0.2, 0.3),
     is_untreated_peak = c(TRUE, TRUE, FALSE),
-    transition_rank = c(NA, NA, 1),
     stringsAsFactors = FALSE
   )
   edges <- data.frame(
     from = c("2.2", "3.1"),
     to = c("2.3", "2.3"),
+    stringsAsFactors = FALSE
+  )
+  transition_scores <- data.frame(
+    karyotype = "2.3",
+    transition_score = 1,
     stringsAsFactors = FALSE
   )
   captured_tau1_step <- NULL
@@ -386,9 +395,10 @@ test_that("transition treatment wrapper passes tau1 at the report treatment step
       res <- alfakR::run_transition_karyotype_abm(
         node_metadata = node_metadata,
         edges = edges,
-        times = c(0, 30),
-        tau1 = 30,
+        horizon_timestep = 30,
+        transition_scores = transition_scores,
         transition_top_n = 1,
+        tau1 = 30,
         abm_delta_t = 1,
         abm_seed = 1
       )

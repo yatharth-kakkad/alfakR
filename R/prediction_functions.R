@@ -501,12 +501,6 @@ standardize_transition_node_metadata <- function(node_metadata, untreated_peak_p
     untreated_rank <- as.numeric(node_metadata$untreated_pct_rank)
     node_metadata$is_untreated_peak <- is.finite(untreated_rank) & untreated_rank >= untreated_peak_percentile
   }
-  if (!"transition_rank" %in% names(node_metadata) && "transition_score" %in% names(node_metadata)) {
-    score <- as.numeric(node_metadata$transition_score)
-    node_metadata$transition_rank <- NA_real_
-    ranked <- which(is.finite(score))
-    node_metadata$transition_rank[ranked] <- rank(-score[ranked], ties.method = "first")
-  }
   node_metadata
 }
 
@@ -519,10 +513,7 @@ fill_missing_transition_fitness <- function(node_metadata, missing_fitness_value
   node_metadata
 }
 
-apply_transition_scores <- function(node_metadata, transition_scores = NULL) {
-  if (is.null(transition_scores)) {
-    return(node_metadata)
-  }
+apply_transition_scores <- function(node_metadata, transition_scores) {
   transition_scores <- read_transition_csv(transition_scores)
   if (!is.data.frame(transition_scores) || !all(c("karyotype", "transition_score") %in% names(transition_scores))) {
     stop("`transition_scores` must contain `karyotype` and `transition_score` columns.", call. = FALSE)
@@ -628,13 +619,15 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #'   `treated_pct_rank`.
 #' @param edges Data frame, or path to a CSV, with from/to columns describing
 #'   the karyotype graph.
-#' @param transition_scores Optional data frame, or path to a CSV, with
-#'   `karyotype` and `transition_score`; when supplied, top targets are selected
-#'   from this file.
+#' @param transition_scores Data frame, or path to a CSV, with `karyotype` and
+#'   `transition_score` columns; the top `transition_top_n` targets are selected
+#'   from this file's ranking.
 #' @param missing_fitness_value Value used when a node is absent from one
 #'   condition-specific ALFA-K landscape and therefore has missing fitness in
 #'   that condition. Default is `0`, meaning baseline birth only.
-#' @param times Non-negative output times aligned to `abm_delta_t`.
+#' @param horizon_timestep Non-negative simulation horizon, aligned to
+#'   `abm_delta_t`; the ABM runs from step 0 up to this time and records every
+#'   `abm_record_interval` steps.
 #' @param tau1 First-treatment time. The treated fitness landscape applies at
 #'   `t >= tau1`; for example, `tau1 = 30` starts treatment on step 30 when
 #'   `abm_delta_t = 1`.
@@ -653,11 +646,11 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #' @param undirected_edges Treat edges as undirected.
 #' @return A list with condition-specific count records, metrics, tau2, and endpoint summary.
 #' @export
-run_transition_karyotype_abm <- function(node_metadata, edges, times,
-                                         transition_scores = NULL,
+run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
+                                         transition_scores,
+                                         transition_top_n,
                                          tau1 = 30,
                                          p_missegregation = 0.02,
-                                         transition_top_n = 10,
                                          abm_pop_size = NULL,
                                          base_death_rate = 0.01,
                                          base_birth_rate = 0.02,
@@ -670,6 +663,9 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
                                          untreated_peak_percentile = 99,
                                          missing_fitness_value = 0) {
   validate_scalar_finite_number(untreated_peak_percentile, "untreated_peak_percentile")
+  if (untreated_peak_percentile < 0 || untreated_peak_percentile > 100) {
+    stop("`untreated_peak_percentile` must be between 0 and 100.", call. = FALSE)
+  }
   node_metadata <- standardize_transition_node_metadata(
     node_metadata,
     untreated_peak_percentile = untreated_peak_percentile
@@ -678,9 +674,10 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
   node_metadata <- fill_missing_transition_fitness(node_metadata, missing_fitness_value = missing_fitness_value)
   node_metadata <- validate_transition_node_metadata(node_metadata)
   edges <- validate_transition_edges(edges, node_metadata$karyotype)
-  validate_times_vector(times, non_negative = TRUE)
+  validate_scalar_finite_number(horizon_timestep, "horizon_timestep")
+  if (horizon_timestep < 0) stop("`horizon_timestep` must be non-negative.", call. = FALSE)
   validate_positive_finite(abm_delta_t, "abm_delta_t")
-  requested_steps <- abm_times_to_steps(times, abm_delta_t)
+  n_steps <- abm_times_to_steps(horizon_timestep, abm_delta_t, name = "horizon_timestep")
   if (!is.null(abm_pop_size)) {
     validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
   }
@@ -726,7 +723,6 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
   untreated_fitness <- stats::setNames(as.list(node_metadata$untreated_fitness), node_metadata$karyotype)
   treated_fitness <- stats::setNames(as.list(node_metadata$treated_fitness), node_metadata$karyotype)
   adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
-  effective_record_interval <- resolve_abm_record_interval(requested_steps, max(requested_steps), abm_record_interval)
 
   result <- run_transition_treatment_abm(
     initial_population_r = initial_pop,
@@ -741,8 +737,8 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
     second_treatment_strength = second_treatment_strength,
     tau1_step = tau1_step,
     dt = abm_delta_t,
-    n_steps = max(requested_steps),
-    record_interval = effective_record_interval,
+    n_steps = n_steps,
+    record_interval = abm_record_interval,
     seed = as.integer(abm_seed)
   )
   result$inputs <- list(

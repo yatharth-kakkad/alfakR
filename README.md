@@ -59,10 +59,10 @@ using the top 10 transition karyotypes:
 res <- run_transition_karyotype_abm(
   node_metadata = "inst/extdata/Node_Metadata.csv",
   edges = "inst/extdata/Edge_DF.csv",
+  horizon_timestep = 60,
   transition_scores = "inst/extdata/transition_karyotype_scores.csv",
-  times = seq(0, 60, by = 10),
-  tau1 = 30,
   transition_top_n = 10,
+  tau1 = 30,
   p_missegregation = 0.02,
   base_death_rate = 0.01,
   base_birth_rate = 0.02,

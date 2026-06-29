@@ -7,11 +7,11 @@
 run_transition_karyotype_abm(
   node_metadata,
   edges,
-  times,
-  transition_scores = NULL,
+  horizon_timestep,
+  transition_scores,
+  transition_top_n,
   tau1 = 30,
   p_missegregation = 0.02,
-  transition_top_n = 10,
   abm_pop_size = NULL,
   base_death_rate = 0.01,
   base_birth_rate = 0.02,
@@ -35,19 +35,21 @@ columns \code{karyotype}, \code{untreated_fitness}, \code{treated_fitness},
 \item{edges}{Data frame, or path to a CSV, with from/to columns describing
 the karyotype graph.}
 
-\item{times}{Non-negative output times aligned to \code{abm_delta_t}.}
+\item{horizon_timestep}{Non-negative simulation horizon, aligned to
+\code{abm_delta_t}; the ABM runs from step 0 up to this time and records every
+\code{abm_record_interval} steps.}
 
-\item{transition_scores}{Optional data frame, or path to a CSV, with
-\code{karyotype} and \code{transition_score}; when supplied, top targets are selected
-from this file.}
+\item{transition_scores}{Data frame, or path to a CSV, with \code{karyotype} and
+\code{transition_score} columns; the top \code{transition_top_n} targets are selected
+from this file's ranking.}
+
+\item{transition_top_n}{Number of highest-ranked transition karyotypes to target.}
 
 \item{tau1}{First-treatment time. The treated fitness landscape applies at
 \code{t >= tau1}; for example, \code{tau1 = 30} starts treatment on step 30 when
 \code{abm_delta_t = 1}.}
 
 \item{p_missegregation}{Per-step probability of graph-neighbor movement.}
-
-\item{transition_top_n}{Number of highest-ranked transition karyotypes to target.}
 
 \item{abm_pop_size}{Optional initial total population allocated across untreated
 peaks. The default \code{NULL} follows the report ABM and places one cell at each

@@ -810,6 +810,12 @@ PopulationMap transition_treatment_step_abm(
   return next_population;
 }
 
+// When `track_tau2` is set, the transition fraction of this same run's
+// trajectory is monitored at every step (not just recorded steps) and the
+// step of its maximum is written to `detected_tau2_step`/
+// `detected_best_transition_fraction`. This lets condition 1's own realized
+// trajectory determine when the second treatment should trigger, rather than
+// inferring it from an unrelated random draw.
 Rcpp::List simulate_transition_condition_abm(
     const PopulationMap& initial_population,
     const FitnessMap& untreated_fitness,
@@ -835,11 +841,16 @@ Rcpp::List simulate_transition_condition_abm(
     std::vector<double>& metric_totals,
     std::vector<double>& metric_diversities,
     std::vector<double>& metric_transition_totals,
-    std::vector<double>& metric_transition_fractions) {
+    std::vector<double>& metric_transition_fractions,
+    bool track_tau2 = false,
+    int* detected_tau2_step = nullptr,
+    double* detected_best_transition_fraction = nullptr) {
   PopulationMap population = initial_population;
   Rcpp::List records;
   bool record_on_interval = record_interval >= 1;
   int interval_every = record_on_interval ? record_interval : 1;
+  int best_tau2_step = tau1_step;
+  double best_transition_fraction = -1.0;
 
   records.push_back(population_to_named_vector_abm(population), "0");
   add_metric_row_abm(metric_conditions, metric_steps, metric_times, metric_totals,
@@ -855,6 +866,13 @@ Rcpp::List simulate_transition_condition_abm(
         base_death_rate, base_birth_rate, fitness_birth_scale,
         second_treatment_strength, rng_engine);
     }
+    if (track_tau2 && step >= tau1_step) {
+      double fraction = transition_fraction_abm(population, transition_set);
+      if (fraction > best_transition_fraction) {
+        best_transition_fraction = fraction;
+        best_tau2_step = step;
+      }
+    }
     if (record_on_interval && (step % interval_every == 0 || step == n_steps)) {
       records.push_back(population_to_named_vector_abm(population), std::to_string(step));
       add_metric_row_abm(metric_conditions, metric_steps, metric_times, metric_totals,
@@ -863,6 +881,10 @@ Rcpp::List simulate_transition_condition_abm(
                          population, transition_set);
     }
     Rcpp::checkUserInterrupt();
+  }
+  if (track_tau2) {
+    if (detected_tau2_step != nullptr) *detected_tau2_step = best_tau2_step;
+    if (detected_best_transition_fraction != nullptr) *detected_best_transition_fraction = best_transition_fraction;
   }
   return records;
 }
@@ -914,19 +936,16 @@ Rcpp::List run_transition_treatment_abm(
     Rcpp::stop("`record_interval` must be positive.");
   }
 
-  std::mt19937 tau_rng;
   std::mt19937 condition1_rng;
   std::mt19937 condition2_rng;
   if (seed == -1) {
     std::random_device rd;
     unsigned int base_seed = rd();
-    tau_rng.seed(base_seed);
-    condition1_rng.seed(base_seed + 1U);
-    condition2_rng.seed(base_seed + 2U);
+    condition1_rng.seed(base_seed);
+    condition2_rng.seed(base_seed + 1U);
   } else {
-    tau_rng.seed(static_cast<unsigned int>(seed));
-    condition1_rng.seed(static_cast<unsigned int>(seed) + 1U);
-    condition2_rng.seed(static_cast<unsigned int>(seed) + 2U);
+    condition1_rng.seed(static_cast<unsigned int>(seed));
+    condition2_rng.seed(static_cast<unsigned int>(seed) + 1U);
   }
 
   int n_chr_types = -1;
@@ -936,26 +955,6 @@ Rcpp::List run_transition_treatment_abm(
   AdjacencyMap adjacency = parse_adjacency_list_abm(adjacency_r, n_chr_types);
   KaryotypeSet transition_set = parse_karyotype_set_abm(transition_karyotypes_r, n_chr_types, "transition_karyotypes_r");
 
-  PopulationMap tau_population = initial_population;
-  int tau2_step = tau1_step;
-  double best_transition_fraction = -1.0;
-  for (int step = 1; step <= n_steps; ++step) {
-    if (!tau_population.empty()) {
-      tau_population = transition_treatment_step_abm(
-        tau_population, untreated_fitness, treated_fitness, adjacency, transition_set,
-        step, tau1_step, -1, false, p_missegregation, base_death_rate,
-        base_birth_rate, fitness_birth_scale, 0.0, tau_rng);
-    }
-    if (step >= tau1_step) {
-      double fraction = transition_fraction_abm(tau_population, transition_set);
-      if (fraction > best_transition_fraction) {
-        best_transition_fraction = fraction;
-        tau2_step = step;
-      }
-    }
-    Rcpp::checkUserInterrupt();
-  }
-
   std::vector<std::string> metric_conditions;
   std::vector<int> metric_steps;
   std::vector<double> metric_times;
@@ -964,13 +963,15 @@ Rcpp::List run_transition_treatment_abm(
   std::vector<double> metric_transition_totals;
   std::vector<double> metric_transition_fractions;
 
+  int tau2_step = tau1_step;
+  double best_transition_fraction = -1.0;
   Rcpp::List condition1 = simulate_transition_condition_abm(
     initial_population, untreated_fitness, treated_fitness, adjacency, transition_set,
     "condition1_first_treatment_only", tau1_step, -1, false, p_missegregation,
     base_death_rate, base_birth_rate, fitness_birth_scale, 0.0, dt, n_steps,
     record_interval, condition1_rng, metric_conditions, metric_steps, metric_times,
     metric_totals, metric_diversities, metric_transition_totals,
-    metric_transition_fractions);
+    metric_transition_fractions, /*track_tau2=*/true, &tau2_step, &best_transition_fraction);
 
   Rcpp::List condition2 = simulate_transition_condition_abm(
     initial_population, untreated_fitness, treated_fitness, adjacency, transition_set,
