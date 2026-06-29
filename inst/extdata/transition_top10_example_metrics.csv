@@ -1,0 +1,15 @@
+"condition","step","time","total_population","diversity","transition_population","transition_fraction"
+"condition1_first_treatment_only",0,0,36,36,0,0
+"condition1_first_treatment_only",10,10,56,35,7,0.125
+"condition1_first_treatment_only",20,20,70,37,5,0.0714285714285714
+"condition1_first_treatment_only",30,30,124,49,8,0.0645161290322581
+"condition1_first_treatment_only",40,40,190,57,19,0.1
+"condition1_first_treatment_only",50,50,279,80,23,0.0824372759856631
+"condition1_first_treatment_only",60,60,405,89,48,0.118518518518519
+"condition2_second_treatment",0,0,36,36,0,0
+"condition2_second_treatment",10,10,56,35,1,0.0178571428571429
+"condition2_second_treatment",20,20,79,32,6,0.0759493670886076
+"condition2_second_treatment",30,30,129,37,15,0.116279069767442
+"condition2_second_treatment",40,40,185,52,24,0.12972972972973
+"condition2_second_treatment",50,50,273,68,44,0.161172161172161
+"condition2_second_treatment",60,60,328,80,2,0.00609756097560976

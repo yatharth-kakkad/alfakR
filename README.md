@@ -14,6 +14,76 @@ We will primarily focus on:
     truth.
 2.  **`alfak`**: Recovering fitness estimates from karyotype count data.
 
+## Treatment-layer ABM extension
+
+This fork adds a treatment-layer ABM for testing whether a second
+treatment that targets high-ranking transition karyotypes can reduce
+the final tumor population and karyotype diversity during a simulated
+fitness-landscape shift.
+
+The new exported function is:
+
+``` r
+run_transition_karyotype_abm()
+```
+
+It uses:
+
+- `Node_Metadata.csv`: untreated and treated fitness metadata for each
+  karyotype node.
+- `Edge_DF.csv`: graph edges between Von Neumann-neighbor karyotypes.
+- `transition_karyotype_scores.csv`: ranked transition karyotypes,
+  where the highest scores identify the transition targets.
+
+The report-aligned ABM defaults initialize one cell at each untreated
+fitness peak, apply the first treatment at `t >= tau1`, choose `tau2`
+as the time where the simulated population has the largest fraction of
+cells in the selected transition-karyotype set, and then compare:
+
+- condition 1: first treatment only
+- condition 2: first treatment plus transition-karyotype-targeting
+  second treatment at `tau2`
+
+### Top-10 transition-karyotype example
+
+A reproducible example script is included at:
+
+``` sh
+Rscript inst/examples/run_transition_top10_example.R
+```
+
+The example runs the treatment ABM against the included graph metadata
+using the top 10 transition karyotypes:
+
+``` r
+res <- run_transition_karyotype_abm(
+  node_metadata = "inst/extdata/Node_Metadata.csv",
+  edges = "inst/extdata/Edge_DF.csv",
+  transition_scores = "inst/extdata/transition_karyotype_scores.csv",
+  times = seq(0, 60, by = 10),
+  tau1 = 30,
+  transition_top_n = 10,
+  p_missegregation = 0.02,
+  base_death_rate = 0.01,
+  base_birth_rate = 0.02,
+  fitness_birth_scale = 0.1,
+  second_treatment_strength = 0.9,
+  abm_delta_t = 1,
+  abm_record_interval = 10,
+  abm_seed = 123
+)
+```
+
+With these settings, the example selects `tau2 = 52`. At the final
+recorded time (`t = 60`), the transition-targeting condition reduces
+the simulated population from 405 cells to 328 cells and occupied
+karyotype diversity from 89 nodes to 80 nodes.
+
+Included example outputs:
+
+- `inst/extdata/transition_top10_example_endpoint_summary.csv`
+- `inst/extdata/transition_top10_example_metrics.csv`
+
 ## Demonstrating `predict_evo`
 
 We will simulate the evolution of karyotype frequencies under different

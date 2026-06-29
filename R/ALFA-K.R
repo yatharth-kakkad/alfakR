@@ -817,6 +817,19 @@ krig_covariance_args <- function() {
   )
 }
 
+krig_null_function_args <- function(null_fun, null_args, x_scaled, Z, drop.Z) {
+  out <- c(null_args, list(x = x_scaled))
+  null_formals <- names(formals(null_fun))
+  if ("Z" %in% null_formals || "drop.Z" %in% null_formals) {
+    out$Z <- Z
+    out$drop.Z <- drop.Z
+  } else if ("XMat" %in% null_formals || "drop.XMat" %in% null_formals) {
+    out$XMat <- Z
+    out$drop.XMat <- drop.Z
+  }
+  out
+}
+
 predict_cached_krig <- function(object, x, dist_mat, Z = NULL, drop.Z = FALSE, just.fixed = FALSE) {
   if (is.null(x)) {
     x <- object$x
@@ -831,7 +844,7 @@ predict_cached_krig <- function(object, x, dist_mat, Z = NULL, drop.Z = FALSE, j
 
   x_scaled <- scale(x, object$transform$x.center, object$transform$x.scale)
   null_fun <- get(object$null.function.name, envir = asNamespace("fields"))
-  Tmatrix <- do.call(null_fun, c(object$null.args, list(x = x_scaled, Z = Z, drop.Z = drop.Z)))
+  Tmatrix <- do.call(null_fun, krig_null_function_args(null_fun, object$null.args, x_scaled, Z, drop.Z))
 
   if (drop.Z) {
     pred <- Tmatrix %*% object$d[object$ind.drift]
