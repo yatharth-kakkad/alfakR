@@ -675,6 +675,12 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #'   `abm_delta_t = 1`.
 #' @param p_missegregation Per-step probability of graph-neighbor movement.
 #' @param transition_top_n Number of highest-ranked transition karyotypes to target.
+#' @param target_selection `"ranked"` (default) targets the top
+#'   `transition_top_n` transition karyotypes by rank. `"random"` instead
+#'   targets a random sample of `transition_top_n` karyotypes drawn from the
+#'   full set of karyotypes in `node_metadata`, as a null-model control.
+#' @param random_target_seed RNG seed used only when `target_selection =
+#'   "random"`. Defaults to `abm_seed`.
 #' @param abm_pop_size Optional initial total population allocated across untreated
 #'   peaks. The default `NULL` follows the report ABM and places one cell at each
 #'   untreated peak.
@@ -695,6 +701,8 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
                                          transition_scores,
                                          transition_top_n,
+                                         target_selection = c("ranked", "random"),
+                                         random_target_seed = NULL,
                                          tau1 = 30,
                                          p_missegregation = 0.02,
                                          abm_pop_size = NULL,
@@ -738,6 +746,7 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
   validate_scalar_finite_number(tau1, "tau1")
   if (tau1 < 0) stop("`tau1` must be non-negative.", call. = FALSE)
   validate_cpp_integerish_scalar(transition_top_n, "transition_top_n", min_value = 1, target = "int")
+  target_selection <- match.arg(target_selection)
 
   tau1_step <- as.integer(round(tau1 / abm_delta_t))
   if (abs(tau1 / abm_delta_t - tau1_step) > 100 * .Machine$double.eps * max(1, abs(tau1 / abm_delta_t))) {
@@ -751,9 +760,18 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
 
   transition_candidates <- node_metadata[is.finite(node_metadata$transition_rank), , drop = FALSE]
   transition_candidates <- transition_candidates[order(transition_candidates$transition_rank), , drop = FALSE]
-  transition_karyotypes <- utils::head(transition_candidates$karyotype, transition_top_n)
-  if (!length(transition_karyotypes)) {
+  if (!nrow(transition_candidates)) {
     stop("`node_metadata$transition_rank` must identify at least one transition karyotype.", call. = FALSE)
+  }
+  if (target_selection == "random") {
+    effective_random_seed <- if (is.null(random_target_seed)) abm_seed else random_target_seed
+    validate_cpp_integerish_scalar(effective_random_seed, "random_target_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
+    rng_state <- if (exists(".Random.seed", envir = .GlobalEnv)) get(".Random.seed", envir = .GlobalEnv) else NULL
+    if (effective_random_seed >= 0) set.seed(effective_random_seed)
+    transition_karyotypes <- sample(node_metadata$karyotype, min(transition_top_n, nrow(node_metadata)))
+    if (!is.null(rng_state)) assign(".Random.seed", rng_state, envir = .GlobalEnv)
+  } else {
+    transition_karyotypes <- utils::head(transition_candidates$karyotype, transition_top_n)
   }
 
   if (is.null(abm_pop_size)) {
@@ -795,6 +813,7 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
     tau1_step = tau1_step,
     p_missegregation = p_missegregation,
     transition_top_n = transition_top_n,
+    target_selection = target_selection,
     transition_karyotypes = transition_karyotypes,
     initial_untreated_peaks = initial_peaks,
     abm_pop_size = effective_abm_pop_size,
