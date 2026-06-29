@@ -331,7 +331,6 @@ test_that("transition treatment wrapper initializes on untreated peaks and targe
         times = c(0, 1),
         tau1 = 0,
         transition_top_n = 1,
-        abm_pop_size = 100,
         abm_delta_t = 1,
         abm_seed = 1
       )
@@ -360,10 +359,61 @@ test_that("transition treatment wrapper initializes on untreated peaks and targe
   )
 
   expect_identical(names(captured$initial_population_r), c("2.2", "3.1"))
-  expect_equal(as.numeric(unlist(captured$initial_population_r)), c(50, 50))
+  expect_equal(as.numeric(unlist(captured$initial_population_r)), c(1, 1))
   expect_identical(captured$transition_karyotypes_r, "1.3")
   expect_true("2.2" %in% names(captured$adjacency_r))
   expect_true("2.3" %in% captured$adjacency_r[["2.2"]])
+})
+
+test_that("transition treatment wrapper passes tau1 at the report treatment step", {
+  node_metadata <- data.frame(
+    karyotype = c("2.2", "3.1", "2.3"),
+    untreated_fitness = c(0.2, 0.1, 0.05),
+    treated_fitness = c(0.05, 0.2, 0.3),
+    is_untreated_peak = c(TRUE, TRUE, FALSE),
+    transition_rank = c(NA, NA, 1),
+    stringsAsFactors = FALSE
+  )
+  edges <- data.frame(
+    from = c("2.2", "3.1"),
+    to = c("2.3", "2.3"),
+    stringsAsFactors = FALSE
+  )
+  captured_tau1_step <- NULL
+
+  testthat::with_mocked_bindings(
+    {
+      res <- alfakR::run_transition_karyotype_abm(
+        node_metadata = node_metadata,
+        edges = edges,
+        times = c(0, 30),
+        tau1 = 30,
+        transition_top_n = 1,
+        abm_delta_t = 1,
+        abm_seed = 1
+      )
+      expect_identical(res$inputs$tau1_step, 30L)
+      expect_identical(res$inputs$abm_pop_size, 2L)
+      expect_null(res$inputs$abm_pop_size_requested)
+    },
+    run_transition_treatment_abm = function(initial_population_r, untreated_fitness_map_r,
+                                            treated_fitness_map_r, adjacency_r,
+                                            transition_karyotypes_r, tau1_step, ...) {
+      captured_tau1_step <<- tau1_step
+      list(
+        tau2_step = 30L,
+        tau2_time = 30,
+        tau2_transition_fraction = 0,
+        condition1 = list("0" = stats::setNames(c(1, 1), c("2.2", "3.1"))),
+        condition2 = list("0" = stats::setNames(c(1, 1), c("2.2", "3.1"))),
+        metrics = data.frame(),
+        endpoint_summary = data.frame()
+      )
+    },
+    .package = "alfakR"
+  )
+
+  expect_identical(captured_tau1_step, 30L)
 })
 
 test_that("chrmod kernels validate transition-matrix shape and still accept legal inputs", {

@@ -635,11 +635,14 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #'   condition-specific ALFA-K landscape and therefore has missing fitness in
 #'   that condition. Default is `0`, meaning baseline birth only.
 #' @param times Non-negative output times aligned to `abm_delta_t`.
-#' @param tau1 First-treatment time. Use `30` for 30 untreated steps followed by
-#'   treatment starting on step 31 when `abm_delta_t = 1`.
+#' @param tau1 First-treatment time. The treated fitness landscape applies at
+#'   `t >= tau1`; for example, `tau1 = 30` starts treatment on step 30 when
+#'   `abm_delta_t = 1`.
 #' @param p_missegregation Per-step probability of graph-neighbor movement.
 #' @param transition_top_n Number of highest-ranked transition karyotypes to target.
-#' @param abm_pop_size Initial total population allocated across untreated peaks.
+#' @param abm_pop_size Optional initial total population allocated across untreated
+#'   peaks. The default `NULL` follows the report ABM and places one cell at each
+#'   untreated peak.
 #' @param base_death_rate Baseline per-step death probability.
 #' @param base_birth_rate Baseline per-step birth probability.
 #' @param fitness_birth_scale Scaling from active ALFA-K fitness to birth probability.
@@ -655,7 +658,7 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
                                          tau1 = 30,
                                          p_missegregation = 0.02,
                                          transition_top_n = 10,
-                                         abm_pop_size = 1e4,
+                                         abm_pop_size = NULL,
                                          base_death_rate = 0.01,
                                          base_birth_rate = 0.02,
                                          fitness_birth_scale = 0.1,
@@ -678,7 +681,9 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
   validate_times_vector(times, non_negative = TRUE)
   validate_positive_finite(abm_delta_t, "abm_delta_t")
   requested_steps <- abm_times_to_steps(times, abm_delta_t)
-  validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+  if (!is.null(abm_pop_size)) {
+    validate_cpp_integerish_scalar(abm_pop_size, "abm_pop_size", min_value = 1, target = "long long")
+  }
   validate_probability_closed(p_missegregation, "p_missegregation")
   validate_probability_closed(base_death_rate, "base_death_rate")
   validate_probability_closed(base_birth_rate, "base_birth_rate")
@@ -708,9 +713,15 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
     stop("`node_metadata$transition_rank` must identify at least one transition karyotype.", call. = FALSE)
   }
 
-  x0 <- rep(1 / length(initial_peaks), length(initial_peaks))
-  names(x0) <- initial_peaks
-  initial_pop <- prepare_abm_initial_population(x0, abm_pop_size)
+  if (is.null(abm_pop_size)) {
+    initial_pop <- stats::setNames(as.list(rep(1, length(initial_peaks))), initial_peaks)
+    effective_abm_pop_size <- length(initial_peaks)
+  } else {
+    x0 <- rep(1 / length(initial_peaks), length(initial_peaks))
+    names(x0) <- initial_peaks
+    initial_pop <- prepare_abm_initial_population(x0, abm_pop_size)
+    effective_abm_pop_size <- abm_pop_size
+  }
 
   untreated_fitness <- stats::setNames(as.list(node_metadata$untreated_fitness), node_metadata$karyotype)
   treated_fitness <- stats::setNames(as.list(node_metadata$treated_fitness), node_metadata$karyotype)
@@ -728,7 +739,7 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
     base_birth_rate = base_birth_rate,
     fitness_birth_scale = fitness_birth_scale,
     second_treatment_strength = second_treatment_strength,
-    tau1_step = tau1_step + 1L,
+    tau1_step = tau1_step,
     dt = abm_delta_t,
     n_steps = max(requested_steps),
     record_interval = effective_record_interval,
@@ -736,12 +747,13 @@ run_transition_karyotype_abm <- function(node_metadata, edges, times,
   )
   result$inputs <- list(
     tau1 = tau1,
-    tau1_step = tau1_step + 1L,
+    tau1_step = tau1_step,
     p_missegregation = p_missegregation,
     transition_top_n = transition_top_n,
     transition_karyotypes = transition_karyotypes,
     initial_untreated_peaks = initial_peaks,
-    abm_pop_size = abm_pop_size,
+    abm_pop_size = effective_abm_pop_size,
+    abm_pop_size_requested = abm_pop_size,
     base_death_rate = base_death_rate,
     base_birth_rate = base_birth_rate,
     fitness_birth_scale = fitness_birth_scale,
