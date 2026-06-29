@@ -504,12 +504,40 @@ standardize_transition_node_metadata <- function(node_metadata, untreated_peak_p
   node_metadata
 }
 
-fill_missing_transition_fitness <- function(node_metadata, missing_fitness_value = 0) {
-  validate_scalar_finite_number(missing_fitness_value, "missing_fitness_value")
-  node_metadata$untreated_fitness <- as.numeric(node_metadata$untreated_fitness)
-  node_metadata$treated_fitness <- as.numeric(node_metadata$treated_fitness)
-  node_metadata$untreated_fitness[!is.finite(node_metadata$untreated_fitness)] <- missing_fitness_value
-  node_metadata$treated_fitness[!is.finite(node_metadata$treated_fitness)] <- missing_fitness_value
+# Imputes one fitness column using graph-neighbor means: for each karyotype
+# with a missing value, uses the mean of its graph-adjacent karyotypes'
+# observed values in this same column, falling back to the column's overall
+# observed mean if no neighbor has data either. Only originally observed
+# values are ever averaged, so imputed values never propagate into other
+# imputed values.
+impute_fitness_column <- function(values, karyotypes, adjacency, name) {
+  values <- as.numeric(values)
+  observed <- is.finite(values)
+  if (!any(observed)) {
+    stop(sprintf("`%s` has no observed (finite) values to impute from.", name), call. = FALSE)
+  }
+  value_map <- stats::setNames(values, karyotypes)
+  global_mean <- mean(values[observed])
+  filled <- values
+  for (i in which(!observed)) {
+    neighbor_values <- value_map[adjacency[[karyotypes[i]]]]
+    neighbor_values <- neighbor_values[is.finite(neighbor_values)]
+    filled[i] <- if (length(neighbor_values)) mean(neighbor_values) else global_mean
+  }
+  list(values = filled, imputed = !observed)
+}
+
+fill_missing_transition_fitness <- function(node_metadata, adjacency) {
+  untreated <- impute_fitness_column(
+    node_metadata$untreated_fitness, node_metadata$karyotype, adjacency, "node_metadata$untreated_fitness"
+  )
+  treated <- impute_fitness_column(
+    node_metadata$treated_fitness, node_metadata$karyotype, adjacency, "node_metadata$treated_fitness"
+  )
+  node_metadata$untreated_fitness <- untreated$values
+  node_metadata$treated_fitness <- treated$values
+  node_metadata$untreated_fitness_imputed <- untreated$imputed
+  node_metadata$treated_fitness_imputed <- treated$imputed
   node_metadata
 }
 
@@ -621,6 +649,13 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #' missegregation, birth, first-treatment fitness switching, automatic second
 #' treatment timing, and endpoint population/diversity reduction summaries.
 #'
+#' A karyotype missing `untreated_fitness` or `treated_fitness` (i.e. absent
+#' from one of the two ALFA-K landscapes) has that value imputed as the mean
+#' of its graph-adjacent karyotypes' observed values in the same landscape,
+#' falling back to that landscape's overall observed mean only if no neighbor
+#' has data either. The number of karyotypes this affects is reported in
+#' `result$inputs`.
+#'
 #' @param node_metadata Data frame, or path to a CSV, with either the canonical
 #'   columns `karyotype`, `untreated_fitness`, `treated_fitness`,
 #'   `is_untreated_peak`, `transition_rank`, or the report-export columns
@@ -632,9 +667,6 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #'   canonical columns `karyotype`/`transition_score`, or the report-export
 #'   columns `Transition_Karyotypes`/`n`; the top `transition_top_n` targets
 #'   are selected from this file's ranking.
-#' @param missing_fitness_value Value used when a node is absent from one
-#'   condition-specific ALFA-K landscape and therefore has missing fitness in
-#'   that condition. Default is `0`, meaning baseline birth only.
 #' @param horizon_timestep Non-negative simulation horizon, aligned to
 #'   `abm_delta_t`; the ABM runs from step 0 up to this time and records every
 #'   `abm_record_interval` steps.
@@ -654,7 +686,11 @@ build_transition_adjacency <- function(karyotypes, edges, undirected = TRUE) {
 #' @param abm_record_interval Record every N steps.
 #' @param abm_seed RNG seed, or -1 for random.
 #' @param undirected_edges Treat edges as undirected.
-#' @return A list with condition-specific count records, metrics, tau2, and endpoint summary.
+#' @return A list with condition-specific count records, metrics, tau2, and
+#'   endpoint summary. `inputs` additionally reports `n_untreated_fitness_imputed`,
+#'   `n_treated_fitness_imputed`, and how many of the selected
+#'   `initial_untreated_peaks`/`transition_karyotypes` relied on an imputed
+#'   fitness value.
 #' @export
 run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
                                          transition_scores,
@@ -670,20 +706,21 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
                                          abm_record_interval = 1,
                                          abm_seed = -1,
                                          undirected_edges = TRUE,
-                                         untreated_peak_percentile = 99,
-                                         missing_fitness_value = 0) {
+                                         untreated_peak_percentile = 99) {
   validate_scalar_finite_number(untreated_peak_percentile, "untreated_peak_percentile")
   if (untreated_peak_percentile < 0 || untreated_peak_percentile > 100) {
     stop("`untreated_peak_percentile` must be between 0 and 100.", call. = FALSE)
   }
+  validate_scalar_logical(undirected_edges, "undirected_edges")
   node_metadata <- standardize_transition_node_metadata(
     node_metadata,
     untreated_peak_percentile = untreated_peak_percentile
   )
   node_metadata <- apply_transition_scores(node_metadata, transition_scores = transition_scores)
-  node_metadata <- fill_missing_transition_fitness(node_metadata, missing_fitness_value = missing_fitness_value)
-  node_metadata <- validate_transition_node_metadata(node_metadata)
   edges <- validate_transition_edges(edges, node_metadata$karyotype)
+  adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
+  node_metadata <- fill_missing_transition_fitness(node_metadata, adjacency)
+  node_metadata <- validate_transition_node_metadata(node_metadata)
   validate_scalar_finite_number(horizon_timestep, "horizon_timestep")
   if (horizon_timestep < 0) stop("`horizon_timestep` must be non-negative.", call. = FALSE)
   validate_positive_finite(abm_delta_t, "abm_delta_t")
@@ -698,7 +735,6 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
   validate_scalar_finite_number(fitness_birth_scale, "fitness_birth_scale")
   validate_cpp_integerish_scalar(abm_record_interval, "abm_record_interval", min_value = 1, target = "int")
   validate_cpp_integerish_scalar(abm_seed, "abm_seed", min_value = 0, allow_negative_one = TRUE, target = "int")
-  validate_scalar_logical(undirected_edges, "undirected_edges")
   validate_scalar_finite_number(tau1, "tau1")
   if (tau1 < 0) stop("`tau1` must be non-negative.", call. = FALSE)
   validate_cpp_integerish_scalar(transition_top_n, "transition_top_n", min_value = 1, target = "int")
@@ -732,7 +768,6 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
 
   untreated_fitness <- stats::setNames(as.list(node_metadata$untreated_fitness), node_metadata$karyotype)
   treated_fitness <- stats::setNames(as.list(node_metadata$treated_fitness), node_metadata$karyotype)
-  adjacency <- build_transition_adjacency(node_metadata$karyotype, edges, undirected = undirected_edges)
 
   result <- run_transition_treatment_abm(
     initial_population_r = initial_pop,
@@ -751,6 +786,10 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
     record_interval = abm_record_interval,
     seed = as.integer(abm_seed)
   )
+  imputed_fitness <- stats::setNames(
+    node_metadata$untreated_fitness_imputed | node_metadata$treated_fitness_imputed,
+    node_metadata$karyotype
+  )
   result$inputs <- list(
     tau1 = tau1,
     tau1_step = tau1_step,
@@ -763,7 +802,11 @@ run_transition_karyotype_abm <- function(node_metadata, edges, horizon_timestep,
     base_death_rate = base_death_rate,
     base_birth_rate = base_birth_rate,
     fitness_birth_scale = fitness_birth_scale,
-    second_treatment_strength = second_treatment_strength
+    second_treatment_strength = second_treatment_strength,
+    n_untreated_fitness_imputed = sum(node_metadata$untreated_fitness_imputed),
+    n_treated_fitness_imputed = sum(node_metadata$treated_fitness_imputed),
+    n_initial_untreated_peaks_imputed = sum(unname(imputed_fitness[initial_peaks])),
+    n_transition_karyotypes_imputed = sum(unname(imputed_fitness[transition_karyotypes]))
   )
   result
 }

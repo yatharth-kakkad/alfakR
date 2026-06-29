@@ -21,8 +21,7 @@ run_transition_karyotype_abm(
   abm_record_interval = 1,
   abm_seed = -1,
   undirected_edges = TRUE,
-  untreated_peak_percentile = 99,
-  missing_fitness_value = 0
+  untreated_peak_percentile = 99
 )
 }
 \arguments{
@@ -71,16 +70,24 @@ untreated peak.}
 \item{abm_seed}{RNG seed, or -1 for random.}
 
 \item{undirected_edges}{Treat edges as undirected.}
-
-\item{missing_fitness_value}{Value used when a node is absent from one
-condition-specific ALFA-K landscape and therefore has missing fitness in
-that condition. Default is \code{0}, meaning baseline birth only.}
 }
 \value{
-A list with condition-specific count records, metrics, tau2, and endpoint summary.
+A list with condition-specific count records, metrics, tau2, and
+endpoint summary. \code{inputs} additionally reports \code{n_untreated_fitness_imputed},
+\code{n_treated_fitness_imputed}, and how many of the selected
+\code{initial_untreated_peaks}/\code{transition_karyotypes} relied on an imputed
+fitness value.
 }
 \description{
 Implements the report ABM update order: death, graph-neighbor
 missegregation, birth, first-treatment fitness switching, automatic second
 treatment timing, and endpoint population/diversity reduction summaries.
+}
+\details{
+A karyotype missing \code{untreated_fitness} or \code{treated_fitness} (i.e. absent
+from one of the two ALFA-K landscapes) has that value imputed as the mean
+of its graph-adjacent karyotypes' observed values in the same landscape,
+falling back to that landscape's overall observed mean only if no neighbor
+has data either. The number of karyotypes this affects is reported in
+\code{result$inputs}.
 }
